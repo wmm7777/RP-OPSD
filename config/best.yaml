@@ -1,0 +1,74 @@
+source:
+  mode: native
+  manifest: provenance/source_files.sha256
+
+model:
+  family: Qwen3.5-9B
+  required_hidden_size: 4096
+
+data:
+  name: Dataset4.0
+  rows: 5295
+  mcq_rows: 5205
+  openqa_rows: 90
+  image_key: images
+  teacher_image_key: teacher_images
+  student_width_height_divisor: 2
+  teacher_width_height_divisor: 1
+  max_prompt_length: 8192
+  max_response_length: 1024
+
+training:
+  epochs: 1
+  total_steps: 55
+  train_batch_size: 96
+  ppo_mini_batch_size: 96
+  ppo_micro_batch_size_per_gpu: 1
+  learning_rate: 2.0e-6
+  warmup_steps: 10
+  rollout_n: 8
+  rollout_temperature: 1.0
+  rollout_top_p: 1.0
+  rollout_top_k: -1
+  seed: 42
+  save_frequency: 55
+  max_actor_checkpoints: 1
+
+distillation:
+  policy_loss: vopd
+  full_logit_distillation: true
+  objective: mopd_topk_reverse_kl
+  topk: 100
+  topk_source: teacher
+  add_tail: false
+  alpha: 1.0
+  teacher_model_source: legacy
+  teacher_regularization: ema
+  teacher_update_rate: 0.05
+  teacher_always_on: true
+  dont_reprompt_on_self_success: true
+  include_environment_feedback: false
+  importance_sampling_clip: 2.0
+
+evaluation:
+  image_resolution: original
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 32768
+  enable_thinking: false
+  seed: 42
+  judge_enable_thinking: false
+  judge_max_tokens: 64
+  judge_tensor_parallel_size: 2
+  benchmarks:
+    - vstar
+    - hrbench-4k
+    - hrbench-8k
+    - mme-realworld
+    - mme-realworld-cn
+    - visualprobe
+    - mmvp
+    - mmstar
+    - pope
+  excluded_benchmarks:
+    - zoombench

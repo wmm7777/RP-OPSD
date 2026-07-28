@@ -1,0 +1,40 @@
+{
+  "protocol": {
+    "image_resolution": "original",
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "max_tokens": 32768,
+    "enable_thinking": false,
+    "seed": 42,
+    "judge": "Qwen3.5-9B, enable_thinking=False, TP=2, max_tokens=64"
+  },
+  "historical_best": {
+    "checkpoint_step": 55,
+    "vstar": 91.10,
+    "hrbench_4k": 86.50,
+    "hrbench_8k": 84.12,
+    "mme_realworld_en": 76.91,
+    "mme_realworld_cn": 72.84,
+    "visualprobe": 56.97,
+    "mmvp": 83.33,
+    "mmstar": 82.67,
+    "pope": 89.43,
+    "main_9_average": 80.43
+  },
+  "diagnostic_half_resolution": {
+    "vstar": 81.68,
+    "hrbench_4k": 82.00,
+    "hrbench_8k": 82.00,
+    "visualprobe": 49.71,
+    "mmvp": 82.33,
+    "cv_bench": 85.94,
+    "mmstar": 79.13,
+    "pope": 88.39,
+    "average_8": 78.90
+  },
+  "notes": [
+    "The historical values are references, not hard pass/fail thresholds.",
+    "On-policy sampling and distributed kernels do not guarantee bitwise-identical weights.",
+    "ZoomBench is intentionally excluded."
+  ]
+}

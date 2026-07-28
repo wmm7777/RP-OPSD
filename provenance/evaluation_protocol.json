@@ -1,0 +1,38 @@
+{
+  "target_model": {
+    "image_scale_divisor": 1,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "max_tokens": 32768,
+    "enable_thinking": false,
+    "seed": 42,
+    "tensor_parallel_size": 8,
+    "gpu_memory_utilization": 0.85,
+    "disable_custom_all_reduce": true,
+    "parallel_workers": 256
+  },
+  "judge": {
+    "model": "Qwen3.5-9B",
+    "temperature": 0.0,
+    "max_tokens": 64,
+    "enable_thinking": false,
+    "tensor_parallel_size": 2,
+    "gpu_memory_utilization": 0.85,
+    "max_model_len": 65536,
+    "disable_custom_all_reduce": true
+  },
+  "benchmarks": [
+    "vstar",
+    "hrbench-4k",
+    "hrbench-8k",
+    "mme-realworld",
+    "mme-realworld-cn",
+    "visualprobe",
+    "mmvp",
+    "mmstar",
+    "pope"
+  ],
+  "excluded": [
+    "zoombench"
+  ]
+}

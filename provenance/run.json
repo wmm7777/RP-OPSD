@@ -1,0 +1,14 @@
+{
+  "method": "RP-OPSD",
+  "model": "Qwen3.5-9B",
+  "source_layout": "native",
+  "source_manifest_sha256": "fffc51b1ebae2a0e133813c41db75693044450560c4053cbc5d8d27d7f4ae582",
+  "embedded_source_files": 476,
+  "reference_checkpoint": "global_step_55",
+  "dataset": "Dataset4.0",
+  "dataset_rows": 5295,
+  "dataset_assets_included": false,
+  "requirements_lock_sha256": "28d23d4dece1e9481e2c5a33008c9bf225abba4621d59c81ca186e10d7766f5e",
+  "training_time_h20_hours": 7.83,
+  "hardware": "8 x NVIDIA H20"
+}
