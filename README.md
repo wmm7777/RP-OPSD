@@ -143,5 +143,4 @@ The included training runtime contains code derived from
 ## License
 
 The code is released under the [Apache License 2.0](LICENSE). See
-[UPSTREAM_LICENSE](UPSTREAM_LICENSE) and [NOTICE.md](NOTICE.md) for upstream
-attribution.
+[NOTICE.md](NOTICE.md) for upstream attribution.

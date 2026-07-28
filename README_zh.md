@@ -129,4 +129,4 @@ MMStar 和 POPE。
 ## 许可证
 
 代码使用 [Apache License 2.0](LICENSE) 发布。上游归属信息见
-[UPSTREAM_LICENSE](UPSTREAM_LICENSE) 和 [NOTICE.md](NOTICE.md)。
+[NOTICE.md](NOTICE.md)。
