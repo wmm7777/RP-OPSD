@@ -2,7 +2,7 @@
 
 **Resolution-Privileged On-Policy Self-Distillation for Multimodal Large Language Models**
 
-[中文说明](README_zh.md) · **Paper:** [arXiv:2607.24447](https://arxiv.org/abs/2607.24447) · **Dataset:** coming soon
+[中文说明](README_zh.md) · **Paper:** [arXiv:2607.24447](https://arxiv.org/abs/2607.24447) · **Dataset:** [Hugging Face](https://huggingface.co/datasets/peppery77/rpopsd/tree/main)
 
 RP-OPSD uses the resolution gap of the same image as privileged information:
 a low-resolution student generates on-policy trajectories, while an
@@ -70,9 +70,10 @@ the main-table average from 79.80 to 80.43.
 The pinned environment uses PyTorch 2.10.0, Transformers 5.5.0, vLLM 0.18.0,
 and Ray 2.53.0.
 
-> **Data status:** Dataset4.0 and its preparation instructions will be
-> released separately. The public package already contains the data
-> validation and materialization pipeline.
+> **Dataset:** Dataset4.0 is available on
+> [Hugging Face](https://huggingface.co/datasets/peppery77/rpopsd/tree/main).
+> This repository includes the corresponding data validation and
+> materialization pipeline.
 
 ### Quick start
 

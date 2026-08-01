@@ -2,7 +2,7 @@
 
 **面向多模态大语言模型的分辨率特权在线策略自蒸馏**
 
-[English](README.md) · **论文：** [arXiv:2607.24447](https://arxiv.org/abs/2607.24447) · **数据集：** coming soon
+[English](README.md) · **论文：** [arXiv:2607.24447](https://arxiv.org/abs/2607.24447) · **数据集：** [Hugging Face](https://huggingface.co/datasets/peppery77/rpopsd/tree/main)
 
 RP-OPSD 将同一图像在不同分辨率下的能力差异作为特权信息：低分辨率 Student
 生成 on-policy 轨迹，原始分辨率 Teacher 提供稠密的 Token 级监督。该方法只需
@@ -58,8 +58,9 @@ Base 提高 **4.16 个百分点 / 5.45% 相对提升**。在半分辨率评测�
 
 固定环境使用 PyTorch 2.10.0、Transformers 5.5.0、vLLM 0.18.0 和 Ray 2.53.0。
 
-> **数据状态：** Dataset4.0 及其准备说明将单独发布。当前公开包已包含数据校验
-> 与物化流程。
+> **数据集：** Dataset4.0 已发布至
+> [Hugging Face](https://huggingface.co/datasets/peppery77/rpopsd/tree/main)。
+> 本仓库包含对应的数据校验与物化流程。
 
 ### 快速开始
 
