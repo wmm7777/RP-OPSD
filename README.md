@@ -54,6 +54,27 @@ the nine metrics. The machine-readable reference and evaluation protocol are
 available in [expected_metrics.json](expected_metrics.json) and
 [provenance/evaluation_protocol.json](provenance/evaluation_protocol.json).
 
+## Cross-Model Distillation
+
+We additionally evaluate resolution-privileged on-policy distillation across
+model scales, using a frozen Qwen3.5-9B teacher to train a Qwen3.5-4B student.
+The student generates on-policy trajectories from half-resolution images,
+while the teacher scores the same trajectories using the original-resolution
+images. Only the 4B student is updated.
+
+The distilled 4B model improves on **6 of 7 benchmarks** and raises the
+seven-benchmark average from **76.50** to **79.25** (**+2.75 points**).
+
+| Method | V\*Bench | HR-4K | HR-8K | VisualProbe | MMVP | MMStar | POPE | Avg. |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Qwen3.5-4B Base | 84.29 | **84.38** | 80.13 | 43.22 | 76.67 | 78.53 | 88.28 | 76.50 |
+| **RP-OPSD (9B Teacher → 4B Student)** | **90.58** | 84.25 | **83.00** | **49.90** | **77.67** | **80.07** | **89.31** | **79.25** |
+
+All results use original-resolution images at evaluation time. This
+seven-benchmark average is not directly comparable with the nine-benchmark
+average in the main table. See the [experiment details](docs/cross_model_distillation.md)
+and [machine-readable results](results/cross_model_9b_to_4b.json).
+
 ## Training Efficiency
 
 RP-OPSD reduces training time from 13.93 to 7.83 hours (1.78×) while raising
@@ -118,6 +139,8 @@ the package and its inputs before training, run `./run.sh verify --help`.
 | `eval/` | Canonical benchmark preparation, inference, judging, and scoring |
 | `chat_templates/` | Qwen3.5 multimodal chat template |
 | `provenance/` | Source hashes and evaluation protocol |
+| `docs/` | Supplementary experiment descriptions |
+| `results/` | Machine-readable supplementary results |
 | `scripts/` | Environment, training, merging, verification, and evaluation tools |
 | `tests/` | Package and release-safety tests |
 

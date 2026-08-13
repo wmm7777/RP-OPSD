@@ -48,6 +48,25 @@ Base 提高 **4.16 个百分点 / 5.45% 相对提升**。在半分辨率评测�
 结果与评测协议见 [expected_metrics.json](expected_metrics.json) 和
 [provenance/evaluation_protocol.json](provenance/evaluation_protocol.json)。
 
+## 跨模型蒸馏
+
+我们进一步在不同模型规模之间验证分辨率特权 On-Policy Distillation：使用固定的
+Qwen3.5-9B Teacher 训练 Qwen3.5-4B Student。Student 基于半分辨率图像生成
+on-policy 轨迹，Teacher 使用原始分辨率图像对相同轨迹进行逐 Token 评分；训练时
+仅更新 4B Student。
+
+蒸馏后的 4B 模型在 **7 项 Benchmark 中有 6 项提升**，七项平均分由
+**76.50** 提升至 **79.25**（**+2.75 个百分点**）。
+
+| 方法 | V\*Bench | HR-4K | HR-8K | VisualProbe | MMVP | MMStar | POPE | Avg. |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Qwen3.5-4B Base | 84.29 | **84.38** | 80.13 | 43.22 | 76.67 | 78.53 | 88.28 | 76.50 |
+| **RP-OPSD（9B Teacher → 4B Student）** | **90.58** | 84.25 | **83.00** | **49.90** | **77.67** | **80.07** | **89.31** | **79.25** |
+
+所有结果均在原始分辨率图像上评测。这里的七项平均分不能与主表的九项平均分
+直接比较。实验设置与完整说明见[跨模型蒸馏实验](docs/cross_model_distillation_zh.md)，
+机器可读结果见 [cross_model_9b_to_4b.json](results/cross_model_9b_to_4b.json)。
+
 ## 复现
 
 ### 环境要求
@@ -105,6 +124,8 @@ MMStar 和 POPE。
 | `eval/` | 标准评测数据准备、推理、Judge 与评分实现 |
 | `chat_templates/` | Qwen3.5 多模态 Chat Template |
 | `provenance/` | 源码哈希与评测协议 |
+| `docs/` | 补充实验说明 |
+| `results/` | 机器可读的补充实验结果 |
 | `scripts/` | 环境、训练、合并、验证与评测工具 |
 | `tests/` | 软件包与发布安全测试 |
 
