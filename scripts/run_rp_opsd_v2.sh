@@ -175,7 +175,7 @@ python3 -m verl.trainer.main_ppo --config-name "$CONFIG_NAME" \
     actor_rollout_ref.model.custom_chat_template_file=$CUSTOM_CHAT_TEMPLATE_FILE \
     +actor_rollout_ref.model.override_config.attn_implementation=sdpa \
     +actor_rollout_ref.rollout.engine_kwargs.vllm.gdn_prefill_backend=triton \
-    actor_rollout_ref.actor.checkpoint.save_contents=[model] \
+    actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra] \
     trainer.project_name=$PROJECT_NAME \
     trainer.group_name=$EXPERIMENT_NAME \
     trainer.experiment_name=$EXPERIMENT_NAME \

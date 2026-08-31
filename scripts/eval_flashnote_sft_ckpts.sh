@@ -19,13 +19,15 @@
 set -uo pipefail
 
 # ===== 实验配置 =====
-EXP="${EXP:-sft}"   # ori | sft | rp_opsd
+EXP="${EXP:-sft}"   # ori | sft | rp_opsd | sft_ori | sft_gold_397b
 
 # 各实验的 checkpoint 根目录
 declare -A CKPT_ROOTS=(
   [sft]="/data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_sft/v0-20260829-230600"
   [ori]="/data4/wumeimei/download_models/Qwen3.5-9B"
   [rp_opsd]="/data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_rp_opsd/merged"
+  [sft_ori]="/data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_sft_ori/v3-20260830-211922"
+  [sft_gold_397b]="/data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_sft_gold_397b/v5-20260831-134357"
 )
 
 # sft: TAG=epoch1.0 → checkpoint-752 (1 epoch = 752 step, save_steps=376)
@@ -34,12 +36,20 @@ declare -A SFT_EPOCH_STEP=(
   [epoch3.0]=2256 [epoch3.5]=2632 [epoch4.0]=3008 [epoch4.5]=3384 [epoch5.0]=3760
 )
 
+# sft_ori: save_steps=360, 735 steps/epoch → epoch → 最近已保存的 checkpoint step
+declare -A SFT_ORI_EPOCH_STEP=(
+  [epoch1.0]=720  [epoch1.5]=1080 [epoch2.0]=1440 [epoch2.5]=1800
+  [epoch3.0]=2160 [epoch3.5]=2520 [epoch4.0]=2880 [epoch4.5]=3240 [epoch5.0]=3600
+)
+
 # 默认 TAG 列表 (按 EXP 选)
 case "$EXP" in
   sft)     TAGS="${TAGS:-epoch1.0 epoch1.5 epoch2.0 epoch2.5 epoch3.0 epoch3.5}" ;;
+  sft_ori) TAGS="${TAGS:-epoch1.0 epoch1.5 epoch2.0 epoch2.5 epoch3.0 epoch3.5}" ;;
+  sft_gold_397b) TAGS="${TAGS:-epoch1.0 epoch1.5}" ;;   # m3 gold_397b SFT, save_steps=376, 复用 SFT_EPOCH_STEP
   ori)     TAGS="${TAGS:-base}" ;;
   rp_opsd) TAGS="${TAGS:-step55}" ;;   # verl 训练完 merge 后的 step, 用户按需改
-  *) echo "[error] EXP=$EXP 不支持 (ori/sft/rp_opsd)"; exit 1 ;;
+  *) echo "[error] EXP=$EXP 不支持 (ori/sft/sft_ori/sft_gold_397b/rp_opsd)"; exit 1 ;;
 esac
 
 # checkpoint 路径解析: 给定 EXP + TAG 返回实际路径
@@ -49,6 +59,14 @@ resolve_ckpt() {
   case "$exp" in
     sft)
       local step="${SFT_EPOCH_STEP[$tag]:-}"
+      [[ -z "$step" ]] && { echo ""; return; }
+      echo "$root/checkpoint-$step" ;;
+    sft_gold_397b)
+      local step="${SFT_EPOCH_STEP[$tag]:-}"
+      [[ -z "$step" ]] && { echo ""; return; }
+      echo "$root/checkpoint-$step" ;;
+    sft_ori)
+      local step="${SFT_ORI_EPOCH_STEP[$tag]:-}"
       [[ -z "$step" ]] && { echo ""; return; }
       echo "$root/checkpoint-$step" ;;
     ori)
@@ -131,6 +149,7 @@ run_infer() {
   VLLM_API_URL="http://localhost:${PORT}/v1/chat/completions" \
   VLLM_MODEL="$VLLM_MODEL" \
   MAX_TOKENS=1024 \
+  CONCURRENCY="${CONCURRENCY:-64}" \
   "$ENV_PY" "$INFER_ROOT/test_image_ts_qwen35_9b.py" $LANGS --label "$label"
 }
 
