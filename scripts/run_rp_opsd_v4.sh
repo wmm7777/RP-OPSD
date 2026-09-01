@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # =============================================================================
-# RP-OPSD v2 单文件训练启动脚本（不嵌套任何其它脚本）
-# 所有变量在本文件顶部统一配置，改参数只改这里。
+# RP-OPSD v4 单文件训练启动脚本（固定 teacher，机器2 m2）
+# 与 v3 base 区别：teacher 从 EMA 改成固定不更新
+#   - student = base Qwen3.5-9B（同 v2）
+#   - teacher = 固定（teacher_update_rate=0.0，EMA 形式 rate=0 = 冻结在 student 初始值）
+#   - 目的：根治 EMA 正反馈退化（teacher 不跟随 student，提供稳定锚点）
+#   - mopd/分辨率特权/5k口径/alpha1.0 全同 v3 base
+#   - m2 跨机运行（sshfs 挂载 /data4+/data1 同名），跨机配置见环境变量段
 # 长度口径: max_prompt(3072) + max_response(2048) = 5120 (5k)
-#   - 数据集实测: 文本 token mean=395 (固定模板) + 图像 token ~1280 ≈ 1700
-#   - 3072 对 prompt 是 1.8x 余量；2048 给 summary 足够空间
-#   - 5120 比 6144 降 17%，直接压低 actor forward/backward 峰值显存
-#     （step 300 seqlen max=120k 时 OOM 的根因修复）
-#   - ppo_max_token_len_per_gpu 必须等于 max_model_len，否则 use_dynamic_bsz=True
-#     会触发 AssertionError @ seqlen_balancing.py:382
-# 启动: bash scripts/run_rp_opsd_v2.sh
+# 启动: bash scripts/run_rp_opsd_v4.sh
 # 日志: tee 到 $OUTPUT_DIR/logs/train.log
 # =============================================================================
 
@@ -18,12 +17,12 @@ PROJECT_ROOT="/data4/wumeimei/flash_note/RP-OPSD"
 MODEL_PATH="/data4/wumeimei/download_models/Qwen3.5-9B"
 CONDA_ENV="verl_opd_flashnote"
 CONDA_SH="/data1/meimei.wu/miniforge3/etc/profile.d/conda.sh"
-OUTPUT_DIR="$PROJECT_ROOT/outputs/flashnote_train_v4"
+OUTPUT_DIR="/data3/wumeimei/flash_note/flashnote_train_v4_fixed_teacher"
 TASK_TRAIN_FILE="$PROJECT_ROOT/.runtime/flashnote_summary/train.parquet"
 CUSTOM_CHAT_TEMPLATE_FILE="$PROJECT_ROOT/chat_templates/perception_chat_template_qwen35.jinja"
 
 # ---------- 实验元数据 ----------
-EXPERIMENT_NAME="RP-OPSD-Qwen3.5-9B"
+EXPERIMENT_NAME="RP-OPSD-Qwen3.5-9B-v4-fixed-teacher"
 PROJECT_NAME="RP-OPSD"
 CONFIG_NAME="vopd"
 
@@ -72,7 +71,7 @@ ROLLOUT_AGENT_NUM_WORKERS=8
 # ---------- 自蒸馏 / Teacher ----------
 TEACHER_MODEL_SOURCE="legacy"
 TEACHER_REGULARIZATION="ema"
-TEACHER_UPDATE_RATE=0.05
+TEACHER_UPDATE_RATE=0.0   # ★ rate=0 → teacher 冻结在 student 初始值，等价固定（根治 EMA 正反馈退化）
 ALPHA=1.0
 DONT_REPROMPT_ON_SELF_SUCCESS=True
 DISTILLATION_TOPK=100
@@ -97,6 +96,18 @@ export RAY_DEDUP_LOGS=0
 export HYDRA_FULL_ERROR=1
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 ulimit -c 0
+
+# ---------- 跨机 m2 配置（sshfs 挂载 /data4+/data1，但 /tmp 与 cache 必须本地化）----------
+# 坑1: TMPDIR 指向 sshfs 无写权限 → 改本地 /tmp（记忆 cross-machine-train-deploy）
+# 坑2: MASTER_PORT 29500 被占 → 换 29501
+# 坑3: triton cache 冷启动竞态 → 本地化（首 step 会慢，后续正常）
+# v4 用 legacy source（teacher=student 副本），无外部教师服务，无假健康检查坑
+export TMPDIR="/tmp/rp_opsd_v4"
+export HF_DATASETS_CACHE="$TMPDIR/hf_datasets"
+export TRITON_CACHE_DIR="$TMPDIR/triton"
+export HF_HOME="$TMPDIR/hf_home"
+export MASTER_PORT=29501
+mkdir -p "$TMPDIR" "$HF_DATASETS_CACHE" "$TRITON_CACHE_DIR" "$HF_HOME"
 
 # ---------- 初始化 ----------
 mkdir -p "$TRAINER_DEFAULT_LOCAL_DIR" "$TRAINER_ROLLOUT_DATA_DIR" "$OUTPUT_DIR/logs"

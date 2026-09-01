@@ -322,22 +322,27 @@ bash scripts/run_rp_opsd.sh \
 8 卡 H20 + Qwen3.5-9B + verl_opd_flashnote 环境的实测启动模板。`scripts/run_rp_opsd_v2.sh` 是单文件入口，所有变量在脚本顶部统一配置，不嵌套任何其它脚本，改参数只改顶部：
 
 ```bash
-tmux new -d -s flashnote_train_v2 "bash /data4/wumeimei/flash_note/RP-OPSD/scripts/run_rp_opsd_v2.sh"
+tmux new -d -s rp_opsd_v3 "bash /data4/wumeimei/flash_note/RP-OPSD/scripts/run_rp_opsd_v2.sh"
 ```
 
-脚本顶部关键字段（6k 口径，详见 §5.4.2）：
+脚本顶部关键字段（5k 口径 + mopd 三件套，详见 §5.4.2 / §5.4.6）：
 
 ```bash
-# 长度字段（6k 口径）
-MAX_PROMPT_LENGTH=5120
-MAX_RESPONSE_LENGTH=1024
-MAX_MODEL_LEN=$((MAX_PROMPT_LENGTH + MAX_RESPONSE_LENGTH))   # 6144
+# 长度字段（5k 口径，2026-09-01 从 6k 降，压低 actor forward/backward 峰值显存）
+MAX_PROMPT_LENGTH=3072
+MAX_RESPONSE_LENGTH=2048
+MAX_MODEL_LEN=$((MAX_PROMPT_LENGTH + MAX_RESPONSE_LENGTH))   # 5120
 PPO_MAX_TOKEN_LEN_PER_GPU=$MAX_MODEL_LEN                      # 必须等于 MAX_MODEL_LEN
 
 # 路径
-OUTPUT_DIR="$PROJECT_ROOT/outputs/flashnote_train_v2"
+OUTPUT_DIR="$PROJECT_ROOT/outputs/flashnote_train_v4"
 TRAINER_DEFAULT_LOCAL_DIR="$OUTPUT_DIR/checkpoints"
 TRAINER_ROLLOUT_DATA_DIR="$OUTPUT_DIR/rollouts"
+
+# 蒸馏目标（官方 canonical 必传，漏传则 verl 默认 generalized_jsd 致退化，详见 §5.4.6）
+DISTILLATION_OBJECTIVE="mopd_topk_reverse_kl"   # 论文 Eq.(5) bias-corrected reverse-KL
+DISTILLATION_TOPK_SOURCE="teacher"               # teacher 选 top-k support
+DISTILLATION_ADD_TAIL=False                       # no tail bucket, no renormalization
 ```
 
 日志自动 `tee` 到 `$OUTPUT_DIR/logs/train.log`。旧 `run_rp_opsd.sh` / `run_rp_opsd.bak.sh` 已废弃，新增需求一律在 `run_rp_opsd_v2.sh` 顶部改。
@@ -351,6 +356,7 @@ TRAINER_ROLLOUT_DATA_DIR="$OUTPUT_DIR/rollouts"
 | `actor_rollout_ref.rollout.gpu_memory_utilization` | 0.7 | 0.5 | CUDA OOM @ `dp_actor.py:703` 的 `torch.logsumexp(logits, dim=-1)` |
 | `actor_rollout_ref.model.use_remove_padding` | True | False | 同上，关掉 padding 优化让 logits 矩阵更大 |
 | `actor_rollout_ref.actor.ppo_max_token_len_per_gpu` | ≥ `max_prompt_length + max_response_length` | < `max_model_len` | `AssertionError: max_token_len must be greater than the sequence length` @ `seqlen_balancing.py:382`，进程在 step 1 的 `update_actor` 阶段直接死，8 卡 vLLM engine core 全部退出 |
+| `self_distillation.distillation_objective` / `topk_source` / `add_tail` | `mopd_topk_reverse_kl` / `teacher` / `False` | **漏传→verl 默认 `generalized_jsd`/`student`/`True`** | ⚠️ **静默退化无报错**：verl 校验只在 objective==mopd 时触发（`actor.py:149-171`），漏传不进校验分支→走 generalized_jsd（forward JSD + student 选 support + tail bucket）→ EMA teacher 正反馈退化，详见 §5.4.6 |
 
 **9B 模型必须保留作者默认 0.7 + True**。实测峰值显存 `perf/max_memory_allocated_gb=125.3`（卡 97GB ×8 卡 + FSDP offload 兜底）。降到 0.5 + 关 remove_padding 时 actor 占 85.97GB，logsumexp 那步分不出 9.47GB 直接 OOM。
 
@@ -444,8 +450,8 @@ RuntimeError: DataLoader worker (pid=XXX) is killed by signal: Killed.
 
 | 指标 | 含义 | 健康值 | 异常信号 |
 |---|---|---|---|
-| `response_length/mean` | 平均生成长度 | 稳定（~270 token） | 突降到 <50 = mode collapse；飙到 1024 = 失控 |
-| `response_length/clip_ratio` | 达到 1024 截断的比例 | <0.05 | >0.2 大量样本被截断 |
+| `response_length/mean` | 平均生成长度 | 稳定（~270 token） | 突降到 <50 = mode collapse；飙到 2048 = 失控 |
+| `response_length/clip_ratio` | 达到 2048 截断的比例 | <0.05 | >0.2 大量样本被截断 |
 | `response/aborted_ratio` | 生成中断率 | =0.0 | >0 说明 rollout 出错 |
 
 **⑥ 效率与显存**
@@ -459,7 +465,7 @@ RuntimeError: DataLoader worker (pid=XXX) is killed by signal: Killed.
 
 **趋势判读口诀**
 
-- **看趋势不看绝对值**：单 step 值意义有限，看连续 10+ step 的趋势。tensorboard 在 `outputs/flashnote_train_v1/` 下（如有 `tensorboard_log/`）。
+- **看趋势不看绝对值**：单 step 值意义有限，看连续 10+ step 的趋势。tensorboard 在 `outputs/flashnote_train_v4/` 下（如有 `tensorboard_log/`）。
 - **先看①**：① 任一 = 0 → 蒸馏机制没起，后续指标都没意义，停下来 debug。
 - **②+④ 联看**：`vopd_loss` 下降 + `kl` 缓降 + `grad_norm` 稳 = 健康训练；`vopd_loss` 降但 `kl` 涨 = student 在 collapse，蒸馏目标被钻空子。
 - **③ 是 on-policy 健康度**：`rollout_is_mean` 偏离 1 + `rollout_is_max` 飙大 = on-policy 假设破坏，要降 `is_clip` 或缩短 rollout-update 间隔。
@@ -470,18 +476,49 @@ RuntimeError: DataLoader worker (pid=XXX) is killed by signal: Killed.
 
 ```bash
 # 看最新 step 全量 metrics
-grep "step:" /data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_train_v1/logs/train.log | tail -1
+grep "step:" /data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_train_v4/logs/train.log | tail -1
 
 # 只看关键 6 指标的趋势（最近 20 step）
-grep "step:" /data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_train_v1/logs/train.log | tail -20 | \
+grep "step:" /data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_train_v4/logs/train.log | tail -20 | \
   grep -oE "step:[0-9]+|actor/vopd_loss:np.float64\([0-9.eE+-]+\)|rollout_corr/kl:np.float64\([0-9.eE+-]+\)|actor/grad_norm:np.float64\([0-9.eE+-]+\)|rollout_corr/ppl_ratio:np.float64\([0-9.eE+-]+\)|response_length/mean:[0-9.]+|self_distillation/num_distill_tokens:np.float64\([0-9.eE+-]+\)"
 
 # 训练进度
-grep "Training Progress" /data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_train_v1/logs/train.log | tail -1
+grep "Training Progress" /data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_train_v4/logs/train.log | tail -1
 
 # 报错检查
-grep -iE "out of memory|cuda.*error|Traceback|RuntimeError.*killed" /data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_train_v1/logs/train.log | tail -5
+grep -iE "out of memory|cuda.*error|Traceback|RuntimeError.*killed" /data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_train_v4/logs/train.log | tail -5
 ```
+
+#### 5.4.6 ⚠️ 配置漏传事故复盘（2026-09-01）
+
+**症状**：v2 运行（`flashnote_train_v2`）在 step175 后 `response_length/mean` 从 ~265 持续暴涨到 737，`max` 长期撞 2048 上限——典型正反馈退化。用户质疑"原始论文 teacher 也是 EMA，为啥我的 summary 场景就不行了"。
+
+**根因**：`run_rp_opsd_v2.sh` **漏传 3 行蒸馏配置**，verl 静默走了错误分支：
+
+| 配置 | 官方 canonical（best.yaml:40-43）| verl 默认（actor.py:88-90）| v2 实际 |
+|---|---|---|---|
+| `distillation_objective` | `mopd_topk_reverse_kl` | `generalized_jsd` | ❌ 漏传→默认 |
+| `distillation_topk_source` | `teacher` | `student` | ❌ 漏传→默认 |
+| `distillation_add_tail` | `false` | `True` | ❌ 漏传→默认 |
+
+致命点：verl 配置校验（`actor.py:149-171`）**仅在 `objective==mopd` 时才触发断言**。漏传时 `objective=generalized_jsd` 不进校验分支 → **不报错，静默走错**。所以"clone 官方仓库"≠"用官方配置"——`run_rp_opsd.sh` 第 155-159 行传了这 3 行，但自写的 `run_rp_opsd_v2.sh` 丢了。
+
+**TB 运行时铁证**（区分走哪个分支的唯一可靠方法）：
+- `core_algos.py:1133-1146` 的 `mopd_topk_reverse_kl` 分支输出 4 个专属指标（:1147-1151）：`mopd_reverse_kl_term_mean` / `mopd_bias_correction_mean` / `teacher_topk_mass_mean` / `student_on_teacher_topk_mass_mean`
+- `generalized_jsd` 分支（:1153-1155）只输出 `raw_jsd_token_mean`，无 `mopd_*`
+- 旧 v2 运行 TB 只有 `raw_jsd_token_mean` → 确认走错分支；v3 补传后 TB 出现 4 个 `mopd_*` → 确认走对
+
+**退化机制**（为什么 generalized_jsd 在 summary 场景退化，而论文 VQA 不退化）：
+- `generalized_jsd` = forward JSD + **student 选 top-k support** + tail bucket。student 退化时自己选的 support 也跟着偏，support 集自适应退化 → 正反馈
+- `mopd`（teacher 选 support）= teacher 固定选 support，student 退化改不了 support → 抗退化。但 EMA teacher 紧跟 student + 开放式摘要无客观锚点 → mopd 也只是**推迟**退化（step4→step27），非根治
+- 论文 VQA 任务有隐式锚点（MCQ 正确答案语义），且任务短答；summary 是开放式长生成，drift 空间大
+
+**修复**：在 `run_rp_opsd_v2.sh` 顶部加 3 变量（:81-83）+ 命令行 3 override（:147-149），详见 §5.4.1。v3（`flashnote_train_v4`）从 0 开始训练，step18 mean 266 稳定（未涨），mopd 生效。
+
+**附坑：idle_protect cron 抢 GPU 致 vllm init failed**：
+- 现象：v3 启动报 `ValueError: Free memory on device cuda:0 (31.71/95.07 GiB) < desired GPU memory utilization (0.7, 66.55 GiB)` → `RuntimeError: Engine core initialization failed`
+- 根因：v3 崩溃后 GPU 空，`idle_protect.sh` cron（每 20min）检测到空闲 → 回填 gemma filler 占满 8 卡（~63GB/卡）→ v3 vllm 抢不到显存
+- 修复：启动训练前先 `tmux kill-session -t idleprotect_g{0..7}` + kill filler 进程，**立刻**启动训练（cron 回填窗口 ~20min，vllm init ~2-3min 占满 GPU 后 idle_protect 不再回填）。详见记忆 `feedback_idleprotect_check_before_launch`
 
 ### 5.5 合并 FSDP 权重
 
@@ -731,3 +768,62 @@ bash scripts/run_flashnote_sft.sh
 ### 11.6 评测
 
 同 §6：合并权重 → 原图 4 语种 summary 推理 → MOS 评测，与 Base / RP-OPSD 同口径对比。
+
+---
+
+## 12. 方案版本矩阵（v2 / v3 / v4）
+
+三个变体共享 mopd + 分辨率特权 + 5k 口径 + alpha1.0，只换 student 起点 或 teacher 更新策略。目的是隔离退化因素（EMA 正反馈 vs student 起点质量）。
+
+| 版本 | Student 起点 | Teacher | 目的 | 运行机器 | 状态 |
+|---|---|---|---|---|---|
+| **v2**（base） | base Qwen3.5-9B | EMA ρ=0.05 | 基线复现 | m4 | ❌ 退化（漏传 mopd，详见 §5.4.6） |
+| **v3**（base+mopd） | base Qwen3.5-9B | EMA ρ=0.05 | mopd 修复基线 | m4 | ✅ 跑中（`flashnote_train_v4`，step18 mean266 健康） |
+| **v3-SFT**（SFT warm-start） | sft_gold_397b_lora_r64_m2 merged/step_2250（2.5epoch, MOS4.064）| EMA ρ=0.05 | SFT 拉齐基础再自蒸馏精修，起点更高防 drift | m3 | ⏳ 待启动 |
+| **v4**（固定 teacher） | base Qwen3.5-9B | **固定不更新**（rate=0） | 根治 EMA 正反馈退化，teacher 提供稳定锚点 | m2 | ⏳ 待启动 |
+
+### 12.1 v3-SFT（SFT warm-start student）
+
+**思路**：SFT 先用 397B 教师 gold 数据拉齐基础摘要能力（MOS 4.064），RP-OPSD 自蒸馏在此基础上用分辨率特权精修——student 已会摘要，自蒸馏只补"从 LR 也能产出 HR 质量"的视觉细节能力，起点更高、drift 空间更小。
+
+**student 权重**：`/data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_sft_gold_397b_lora_r64_m2/merged/step_2250/`（LoRA r64 2.5epoch merge 后的全参数 safetensors + config.json，可直接加载）。选 2.5epoch 因 eval report §3.1 确认 LoRA epoch2.5 = MOS 4.064（与全参 epoch1.0 打平，性价比最优）。
+
+**配置改动**（相对 v3 base）：仅改 `run_rp_opsd_v2.sh` 顶部一行
+```bash
+MODEL_PATH="/data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_sft_gold_397b_lora_r64_m2/merged/step_2250"
+OUTPUT_DIR="/data3/wumeimei/flash_note/flashnote_train_v3sft"   # /data3（1.2T 可用，/data4 装不下）
+```
+teacher 仍 EMA ρ=0.05（teacher 从 SFT ckpt 初始化，慢速跟随 student）。mopd/分辨率特权/5k 口径/alpha1.0 全不变。
+
+**注意**：SFT warm-start 提高起点但**不根治退化**——EMA teacher 仍无外部锚点。预期退化起始推迟、幅度减小，但需 step150 评估确认（盯 `response_length/mean` 是否上涨，判据见 §5.4.5）。
+
+### 12.2 v4（固定 teacher，机器2）
+
+**思路**：EMA teacher 紧跟 student 是正反馈退化的根因（§5.4.6）。固定 teacher（不随 student 更新）提供绝对稳定锚点，student 向一个不动的 teacher 分布对齐，从机制上消除正反馈。cross_model_distillation_zh.md 已验证固定 9B teacher 不退化（7 benchmark 6 提升）。
+
+**固定 teacher 两种实现**（框架 `actor.py:72-73,183` 支持）：
+
+| 方式 | 配置 | 显存 | 说明 |
+|---|---|---|---|
+| **A. rate=0**（推荐起步） | `teacher_regularization=ema` + `teacher_update_rate=0.0` | 不额外占（teacher 复用 student 初始副本） | teacher = student 初始 base 9B 冻结，最小改动 |
+| **B. fixed source** | `teacher_model_source=fixed` + `teacher_model_path=<path>` | +1 份 9B 权重 | teacher 用独立权重（如 SFT 9B），质量更高但显存翻倍 |
+
+v2 配置基础上改（`run_rp_opsd_v2.sh` 顶部）：
+```bash
+TEACHER_REGULARIZATION="ema"        # 保持 ema 模式
+TEACHER_UPDATE_RATE=0.0             # ★ rate=0 → teacher 冻结在初始值，等价固定
+OUTPUT_DIR="/data3/wumeimei/flash_note/flashnote_train_v4_fixed_teacher"   # /data3（1.2T 可用）
+```
+命令行 override 对应 `actor_rollout_ref.actor.self_distillation.teacher_update_rate=0.0`。其余（mopd/分辨率特权/5k/base 9B student）全同 v2。
+
+**机器2 运行注意**（详见 skill `cross-machine-train-deploy`）：
+- sshfs 同名挂载 `/data4` `/data1`，miniforge3 路径零改（脚本/数据/conda/base 模型都可见）
+- `TMPDIR` 指本地 `/tmp`（sshfs 无写权限坑，脚本已内置 `TMPDIR=/tmp/rp_opsd_v4`）
+- `MASTER_PORT` 29500 被占→换 29501（脚本已内置）
+- triton/HF cache 本地化（脚本已内置，首 step 冷启动慢）
+- v4 用 legacy source（teacher=student 副本），**不涉及外部教师服务**，无假健康检查坑
+- m2 的 `/data3/wumeimei/flash_note` 需先建（m2 本地盘，输出写本地）
+- 启动前先 `tmux kill-session -t idleprotect_g{0..7}`（m2 也有 idle_protect cron，抢 GPU 同坑）
+- m2 必须 `sudo -u meimei.wu -i` 切身份才通（ec2-user 直连 Permission denied）
+
+**预期**：固定 teacher 根治 EMA 正反馈，`response_length/mean` 应稳定不涨。但 base 9B teacher 质量低（不会摘要），student 向低质量 teacher 对齐可能限制上限——若效果不佳，升级方式 B 用 SFT 9B 做固定 teacher。

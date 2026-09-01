@@ -1,29 +1,27 @@
 #!/usr/bin/env bash
 # =============================================================================
-# RP-OPSD v2 单文件训练启动脚本（不嵌套任何其它脚本）
-# 所有变量在本文件顶部统一配置，改参数只改这里。
+# RP-OPSD v3-SFT 单文件训练启动脚本（SFT warm-start student，机器3 m3）
+# 与 v3 base 区别：student 起点从 base 9B 换成 SFT 2.5epoch merged 权重
+#   - student = sft_gold_397b_lora_r64_m2/merged/step_2250（LoRA 2.5epoch, MOS4.064）
+#   - teacher 仍 EMA ρ=0.05（从 SFT ckpt 初始化，慢速跟随）
+#   - mopd/分辨率特权/5k口径/alpha1.0 全同 v3 base
 # 长度口径: max_prompt(3072) + max_response(2048) = 5120 (5k)
-#   - 数据集实测: 文本 token mean=395 (固定模板) + 图像 token ~1280 ≈ 1700
-#   - 3072 对 prompt 是 1.8x 余量；2048 给 summary 足够空间
-#   - 5120 比 6144 降 17%，直接压低 actor forward/backward 峰值显存
-#     （step 300 seqlen max=120k 时 OOM 的根因修复）
-#   - ppo_max_token_len_per_gpu 必须等于 max_model_len，否则 use_dynamic_bsz=True
-#     会触发 AssertionError @ seqlen_balancing.py:382
-# 启动: bash scripts/run_rp_opsd_v2.sh
+# 启动: bash scripts/run_rp_opsd_v3sft.sh
 # 日志: tee 到 $OUTPUT_DIR/logs/train.log
+# 跨机 m3 注意: TMPDIR/MASTER_PORT/CACHE 本地化（见环境变量段）
 # =============================================================================
 
 # ---------- 路径与运行身份 ----------
 PROJECT_ROOT="/data4/wumeimei/flash_note/RP-OPSD"
-MODEL_PATH="/data4/wumeimei/download_models/Qwen3.5-9B"
+MODEL_PATH="/data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_sft_gold_397b_lora_r64_m2/merged/step_2250"
 CONDA_ENV="verl_opd_flashnote"
 CONDA_SH="/data1/meimei.wu/miniforge3/etc/profile.d/conda.sh"
-OUTPUT_DIR="$PROJECT_ROOT/outputs/flashnote_train_v4"
+OUTPUT_DIR="/data3/wumeimei/flash_note/flashnote_train_v3sft"
 TASK_TRAIN_FILE="$PROJECT_ROOT/.runtime/flashnote_summary/train.parquet"
 CUSTOM_CHAT_TEMPLATE_FILE="$PROJECT_ROOT/chat_templates/perception_chat_template_qwen35.jinja"
 
 # ---------- 实验元数据 ----------
-EXPERIMENT_NAME="RP-OPSD-Qwen3.5-9B"
+EXPERIMENT_NAME="RP-OPSD-Qwen3.5-9B-v3sft"
 PROJECT_NAME="RP-OPSD"
 CONFIG_NAME="vopd"
 
@@ -97,6 +95,17 @@ export RAY_DEDUP_LOGS=0
 export HYDRA_FULL_ERROR=1
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 ulimit -c 0
+
+# ---------- 跨机 m3 配置（sshfs 挂载 /data4+/data1，但 /tmp 与 cache 必须本地化）----------
+# 坑1: TMPDIR 指向 sshfs 无写权限 → 改本地 /tmp（记忆 cross-machine-train-deploy）
+# 坑2: MASTER_PORT 29500 被占 → 换 29501
+# 坑3: triton cache 冷启动竞态 → 本地化（首 step 会慢，后续正常）
+export TMPDIR="/tmp/rp_opsd_v3sft"
+export HF_DATASETS_CACHE="$TMPDIR/hf_datasets"
+export TRITON_CACHE_DIR="$TMPDIR/triton"
+export HF_HOME="$TMPDIR/hf_home"
+export MASTER_PORT=29501
+mkdir -p "$TMPDIR" "$HF_DATASETS_CACHE" "$TRITON_CACHE_DIR" "$HF_HOME"
 
 # ---------- 初始化 ----------
 mkdir -p "$TRAINER_DEFAULT_LOCAL_DIR" "$TRAINER_ROLLOUT_DATA_DIR" "$OUTPUT_DIR/logs"

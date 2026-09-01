@@ -28,12 +28,13 @@ declare -A CKPT_ROOTS=(
   [rp_opsd]="/data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_rp_opsd/merged"
   [sft_ori]="/data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_sft_ori/v3-20260830-211922"
   [sft_gold_397b]="/data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_sft_gold_397b/v5-20260831-134357"
+  [sft_gold_397b_lora_r64_m2]="/data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_sft_gold_397b_lora_r64_m2/merged"
 )
 
 # sft: TAG=epoch1.0 → checkpoint-752 (1 epoch = 752 step, save_steps=376)
 declare -A SFT_EPOCH_STEP=(
   [epoch1.0]=752  [epoch1.5]=1128 [epoch2.0]=1504 [epoch2.5]=1880
-  [epoch3.0]=2256 [epoch3.5]=2632 [epoch4.0]=3008 [epoch4.5]=3384 [epoch5.0]=3760
+  [epoch3.0]=2256 [epoch3.5]=2632 [epoch4.0]=3008 [epoch4.5]=3384 [epoch5.0]=3730
 )
 
 # sft_ori: save_steps=360, 735 steps/epoch → epoch → 最近已保存的 checkpoint step
@@ -42,14 +43,22 @@ declare -A SFT_ORI_EPOCH_STEP=(
   [epoch3.0]=2160 [epoch3.5]=2520 [epoch4.0]=2880 [epoch4.5]=3240 [epoch5.0]=3600
 )
 
+# sft_gold_397b_lora_r64_m2: save_steps=450, 994 steps/epoch → epoch → step
+# 1 epoch=994 step, 用 step 取最近 450 倍数
+declare -A LORA_R64_EPOCH_STEP=(
+  [epoch1.0]=900  [epoch1.5]=1350 [epoch2.0]=1800 [epoch2.5]=2250
+  [epoch3.0]=2700 [epoch3.5]=3150 [epoch4.0]=3600 [epoch4.5]=4500 [epoch5.0]=4950
+)
+
 # 默认 TAG 列表 (按 EXP 选)
 case "$EXP" in
   sft)     TAGS="${TAGS:-epoch1.0 epoch1.5 epoch2.0 epoch2.5 epoch3.0 epoch3.5}" ;;
   sft_ori) TAGS="${TAGS:-epoch1.0 epoch1.5 epoch2.0 epoch2.5 epoch3.0 epoch3.5}" ;;
   sft_gold_397b) TAGS="${TAGS:-epoch1.0 epoch1.5}" ;;   # m3 gold_397b SFT, save_steps=376, 复用 SFT_EPOCH_STEP
+  sft_gold_397b_lora_r64_m2) TAGS="${TAGS:-epoch1.0 epoch1.5 epoch2.0 epoch2.5}" ;;  # m2 LoRA r64, save_steps=450, 需先 merge_lora 到 merged/step_X
   ori)     TAGS="${TAGS:-base}" ;;
   rp_opsd) TAGS="${TAGS:-step55}" ;;   # verl 训练完 merge 后的 step, 用户按需改
-  *) echo "[error] EXP=$EXP 不支持 (ori/sft/sft_ori/sft_gold_397b/rp_opsd)"; exit 1 ;;
+  *) echo "[error] EXP=$EXP 不支持 (ori/sft/sft_ori/sft_gold_397b/sft_gold_397b_lora_r64_m2/rp_opsd)"; exit 1 ;;
 esac
 
 # checkpoint 路径解析: 给定 EXP + TAG 返回实际路径
@@ -65,6 +74,10 @@ resolve_ckpt() {
       local step="${SFT_EPOCH_STEP[$tag]:-}"
       [[ -z "$step" ]] && { echo ""; return; }
       echo "$root/checkpoint-$step" ;;
+    sft_gold_397b_lora_r64_m2)
+      local step="${LORA_R64_EPOCH_STEP[$tag]:-}"
+      [[ -z "$step" ]] && { echo ""; return; }
+      echo "$root/step_$step" ;;   # merged/step_1800 等 (需先 swift export --merge_lora)
     sft_ori)
       local step="${SFT_ORI_EPOCH_STEP[$tag]:-}"
       [[ -z "$step" ]] && { echo ""; return; }

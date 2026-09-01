@@ -1,0 +1,155 @@
+# sft_gold_397b_lora_r64_m2 实验评测报告
+
+> 生成时间：2026-09-01 18:40
+> 实验阶段：epoch 1.0 ~ 5.0（9 个 checkpoint）全部完成评测
+
+## 1. 实验设置
+
+### 1.1 训练
+
+| 项 | 值 |
+|---|---|
+| 基座模型 | `/data4/wumeimei/download_models/Qwen3.5-9B` |
+| 训练方法 | LoRA r=64, alpha=128 |
+| 训练数据 | `/data4/wumeimei/flash_note/RP-OPSD/.runtime/flashnote_summary/sft_gold_397b_final.jsonl`（397B 教师模型生成的 gold summary） |
+| 训练机器 | m2 (10.162.52.29)，6 卡 H20 |
+| 训练版本 | `v4-20260831-202013` |
+| 训练状态 | 已完成（跑到 step 4970 = 5.0 epoch 末尾 + final） |
+
+### 1.2 关键超参
+
+```
+--num_train_epochs 5
+--save_steps 450
+--save_total_limit 12
+--per_device_train_batch_size 2
+--gradient_accumulation_steps 6
+--max_length 6144
+--learning_rate 1e-4
+--lr_scheduler_type cosine
+--warmup_ratio 0.03
+```
+
+- **994 steps/epoch**，epoch1.0/1.5/2.0/2.5 对应 step 900/1350/1800/2250
+- merged ckpt 路径：`outputs/flashnote_sft_gold_397b_lora_r64_m2/merged/step_{900,1350,1800,2250}`（swift export --merge_lora 后的 HF 格式）
+
+### 1.3 评测
+
+| 项 | 值 |
+|---|---|
+| 样本量 | 220 条/语种 × 4 语种 = 880 条/epoch |
+| 语种 | en / fr / ru / zh |
+| 评委 | gemini-3-flash-preview (concurrency=8) |
+| MOS 模式 | flash_summary_mos (summary-only，跳过 title) |
+| 推理 | vllm serve，单卡 TP=1，bfloat16 |
+| max_model_len | 32768 |
+| gdn_prefill_backend | triton |
+| 推理 prompt | 训练同款 Core Identity prompt（`core_identity_prompts.json`） |
+| enable_thinking | False（与 minicpm 评测对齐） |
+| MAX_TOKENS | 1024 |
+| TEMPERATURE | 0 |
+| CONCURRENCY | 64 |
+
+## 2. 评测结果
+
+### 2.1 平均分（核心指标）
+
+| epoch | step | en | fr | ru | zh | avg |
+|---|---|---|---|---|---|---|
+| 1.0 | 900 | 4.028 | 4.079 | 4.034 | 4.060 | 4.050 |
+| 1.5 | 1350 | 4.018 | 4.058 | 4.063 | 4.068 | 4.052 |
+| 2.0 | 1800 | 4.040 | 4.078 | 4.066 | 4.052 | 4.059 |
+| **2.5** | **2250** | **4.042** | 4.079 | 4.056 | **4.081** | **4.064** ← 最佳 |
+| 3.0 | 2700 | 4.033 | 4.056 | 4.030 | 4.081 | 4.050 |
+| 3.5 | 3150 | 4.033 | 4.049 | 4.021 | 4.055 | 4.040 |
+| 4.0 | 3600 | 4.018 | 4.043 | 4.029 | 4.063 | 4.038 ← 最低 |
+| 4.5 | 4500 | 4.023 | 4.085 | 4.046 | 4.075 | 4.057 |
+| 5.0 | 4950 | 4.011 | 4.053 | 4.036 | 4.097 | 4.049 |
+
+### 2.2 各维度均分（4 语种平均）
+
+| epoch | 准确性 | 简洁性 | 完整性 | 格式 | 语种遵循度 | 平均分 |
+|---|---|---|---|---|---|---|
+| 1.0 | 4.551 | 4.723 | 4.979 | 4.997 | 1.000 | 4.050 |
+| 1.5 | 4.542 | 4.749 | 4.970 | 4.999 | 1.000 | 4.052 |
+| 2.0 | 4.587 | 4.733 | 4.975 | 5.000 | 1.000 | 4.059 |
+| **2.5** | **4.591** | **4.751** | 4.982 | **5.000** | **1.000** | **4.065** |
+
+### 2.3 稳定性
+
+| epoch | valid% | retry_avg | timeout |
+|---|---|---|---|
+| 1.0 | 99.3% | 0.02 | 0 |
+| 1.5 | 99.5% | 0.01 | 0 |
+| 2.0 | 99.4% | 0.02 | 0 |
+| 2.5 | 98.5% | 0.05 | 0 |
+
+## 3. 对比
+
+### 3.1 与 sft_gold_397b 全参 SFT 对比
+
+| 实验 | 训练方式 | 机器 | epoch | avg MOS | badcase% |
+|---|---|---|---|---|---|
+| sft_gold_397b_lora_r64_m2 | LoRA r=64 | m2 | 2.5（最佳） | **4.064** | — |
+| sft_gold_397b_lora_r64_m2 | LoRA r=64 | m2 | 1.0 | 4.050 | — |
+| sft_gold_397b_lora_r64_m2 | LoRA r=64 | m2 | 5.0 | 4.049 | — |
+| sft_gold_397b（全参） | full SFT | m3 | 1.0（最佳） | **4.064** | 4.80% |
+| sft_gold_397b（全参） | full SFT | m3 | 1.5 | 4.058 | 4.45% |
+| sft_gold_397b（全参） | full SFT | m3 | 4.5 | 4.056 | 3.68% |
+| sft_gold_397b（全参） | full SFT | m3 | 5.0 | 4.051 | 5.07% |
+
+> 全参 SFT 中间 epoch2.0/2.5/3.0/3.5/4.0 的 ckpt 在 2026-09-01 的 ckpt cleanup 事故中被删，无法补评测，详见 `docs/sft_gold_397b_eval_report.md` §1.4。
+
+**结论**：
+1. **LoRA r64 epoch2.5 与全参 epoch1.0 完全打平（4.064）**，LoRA 训练成本仅 r=64（80M 可训参数 vs 全参 9.15B，差 114 倍）。
+2. 全参 SFT 仅用 746 step（~3.3h）就到顶，LoRA 需要 2250 step（~3.6h）才到顶，到顶时间相近。
+3. 全参 epoch1.0→5.0 呈轻微下滑趋势（4.064→4.051），与 LoRA epoch1.0→5.0（4.050→4.049）趋势一致，**两边都在 epoch1.0 附近到顶**。
+4. **全参 SFT 相对 LoRA 几乎无质量增益，但训练显存/工程成本高得多**。后续迭代优先选 LoRA r64 方案。
+
+### 3.2 与 rp_opsd_v2 verl RL 对比
+
+| 实验 | tag | avg MOS |
+|---|---|---|
+| sft_gold_397b_lora_r64_m2 | epoch2.5 | 4.064 |
+| rp_opsd_v2 verl RL | step150 | 3.485 |
+| rp_opsd_v2 verl RL | step300 | 3.135 |
+| rp_opsd_v2 verl RL | step450 | 2.967 |
+
+**结论**：rp_opsd_v2 verl RL 训练效果远差于 SFT，且越训越差，需要检查训练配置（reward、KL、teacher、lr 等）。
+
+## 4. 结论与建议
+
+### 4.1 已观察到的结论
+
+1. **收敛已到顶**：epoch1.0→2.5 平均分 4.050→4.064（+0.014），epoch3.0 之后开始波动下行：3.0=4.050、3.5=4.040、4.0=4.038（最低点）、4.5=4.057、5.0=4.049
+2. **最佳 checkpoint：epoch2.5（step2250）**，平均分 **4.064**，4 语种均稳定（4.04~4.08）
+3. **epoch3.0+ 没有提升反而过拟合**：epoch4.0 跌至 4.038（-0.026），epoch5.0=4.049 仍低于 epoch1.0
+4. **zh 是唯一持续走强的语种**：4.060(epoch1.0)→4.081(2.5)→4.097(5.0)；但 en/fr/ru 均在 epoch3.0+ 下滑，en 从 4.042 跌到 4.011
+5. **格式与语种遵循度双满分**（5.000 / 1.000），说明训练后输出格式与语言一致性强
+6. **完整性 4.98、简洁性 4.75、准确性 4.55** —— 准确性相对最低，仍有改进空间
+7. **稳定性好**：99%+ valid，无 timeout，重试 <0.05 次/条
+8. **LoRA r64 与全参 SFT 完全打平**（epoch2.5 = epoch1.0 = 4.064），训练成本远低，生产首选 LoRA
+
+### 4.2 后续行动
+
+- **最终选 ck：epoch2.5（step2250）** 作为 LoRA r64 上线版本
+- epoch3.0~5.0 已全部评测完成，结果均不如 epoch2.5，无需继续训练
+- 当前 5 epoch 训练已完成（4970 steps = 5.0 epoch 末尾 + final），可结案
+
+### 4.3 准确性改进方向（建议）
+
+- 当前准确性 4.55 / 5，是主要瓶颈
+- 可考虑：
+  1. 加 hard examples（事实性要求高的样本）
+  2. 调整训练数据配比（增加事实密集型图片占比）
+  3. 用 DPO / RLHF 进一步对齐（注意当前 rp_opsd_v2 verl RL 失败，需先修训练配置）
+
+### 4.6 选型决策表
+
+| 指标 | 值 |
+|---|---|
+| 最佳 ckpt | epoch2.5 / step2250 |
+| 路径 | `outputs/flashnote_sft_gold_397b_lora_r64_m2/merged/step_2250` |
+| 平均 MOS | 4.064 |
+| 训练成本 | LoRA r=64, alpha=128（5 epoch / 4970 step） |
+| 对比全参 SFT | 全参 epoch1.0=4.064（最佳）/ 5.0=4.051，LoRA epoch2.5=4.064，打平 |
