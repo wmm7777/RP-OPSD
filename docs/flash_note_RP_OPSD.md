@@ -465,7 +465,7 @@ RuntimeError: DataLoader worker (pid=XXX) is killed by signal: Killed.
 
 **趋势判读口诀**
 
-- **看趋势不看绝对值**：单 step 值意义有限，看连续 10+ step 的趋势。tensorboard 在 `outputs/flashnote_train_v4/` 下（如有 `tensorboard_log/`）。
+- **看趋势不看绝对值**：单 step 值意义有限，看连续 10+ step 的趋势。tensorboard 日志在**仓库根** `tensorboard_log/RP-OPSD/<experiment_name>/`（verl `tracking.py:264` 相对 cwd 写仓库根，**非** `output_dir` 下；按 experiment 分子目录，如 `RP-OPSD-Qwen3.5-9B/`=v3、`-v3sft/`、`-v4-m1-4gpu/`）。训练 venv 未装 tensorboard，用 swift 环境启动：`/data1/meimei.wu/miniforge3/envs/swift/bin/tensorboard --logdir tensorboard_log/RP-OPSD --port 6007 --bind_all`。
 - **先看①**：① 任一 = 0 → 蒸馏机制没起，后续指标都没意义，停下来 debug。
 - **②+④ 联看**：`vopd_loss` 下降 + `kl` 缓降 + `grad_norm` 稳 = 健康训练；`vopd_loss` 降但 `kl` 涨 = student 在 collapse，蒸馏目标被钻空子。
 - **③ 是 on-policy 健康度**：`rollout_is_mean` 偏离 1 + `rollout_is_max` 飙大 = on-policy 假设破坏，要降 `is_clip` 或缩短 rollout-update 间隔。
@@ -487,6 +487,54 @@ grep "Training Progress" /data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_tr
 
 # 报错检查
 grep -iE "out of memory|cuda.*error|Traceback|RuntimeError.*killed" /data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_train_v4/logs/train.log | tail -5
+```
+
+#### 5.4.5.1 v3 实测健康分析（2026-09-02，step428）
+
+v3（`flashnote_train_v4`，base 9B + mopd 修复后）运行至 step428/1502（2 epoch 计划，完成约 28%）。用 `scripts/analyze_loss.py` 解析 train.log 全量 step 行，六类指标实测如下。
+
+**进度**：step 151–428（解析 278 步，前/中/后三段 + 末 5 步均）
+
+| 类别 | 关键指标 | 实测（前段均→末5步均） | 判读 |
+|---|---|---|---|
+| ①蒸馏生效 | num_distill_tokens | 1663→1938，全程 >0 | ✅ 缓升，监督覆盖扩大 |
+| | teacher_image_swap_fraction | =1.0 全程 | ✅ 分辨率特权生效 |
+| | policy_fallback / grpo_fallback | =0 / =0 全程 | ✅ 未退化到 PG |
+| ②师生对齐 | **actor/vopd_loss** | 0.0758→0.0099（**-87%**） | ✅ 平滑单调收敛 |
+| | rollout_corr/kl | 0.057→0.064（区间 0.05–0.13） | ✅ 缓降 |
+| | mopd_* 四指标 | 全程存在 | ✅ 走对 mopd 分支（§5.4.6 铁证） |
+| | tkmass 缺口(teacher-student) | 0.020→0.009 | ✅ 师生分布在靠近 |
+| ③IS | is_mean / is_std / is_max | 1.0 / 0 / 1.0 | ✅ 完全 on-policy |
+| ④稳定性 | actor/grad_norm | max 25.3，末 0.7 | ✅ 远 <100 发散线 |
+| | actor/lr | 稳 2e-6 | ✅ warmup 已过 |
+| ⑤生成质量 | response_length/mean | 304→383（+26%，0.32 tok/step） | ⚠️ 温和上涨（未失控） |
+| | response_length/clip_ratio | 0.0075→0.022 | ✅ <0.05 健康线 |
+| ⑥效率显存 | perf/max_memory_allocated_gb | 112GB 稳定 | ✅ <125 |
+| | timing_s/step | 195→200 | ✅ 3.3min/step |
+
+**弱信号（未失控，需持续盯）**：
+
+1. **resp_len 温和上涨**（304→383，斜率 0.32 tok/step）：对比 v2 退化是 265→737（+177%），v3 仅 +26% 且 max=422 未失控、clip_ratio<0.03。是轻度 drift 倾向，**非 mode collapse**（collapse = 长度突降 + clip=0 + kl→0，v3 三项相反）。配合 vopd 持续下降，属于"对齐中生成变长"而非坍缩。
+2. **chi2_token 偶发尖峰**：中位 p50=0.42 / p90=1.16 健康，但有 7 个 step >10，**最新 step428=147 为全程最高**。偶发尖峰是个别 batch 师生 token 分布瞬时偏离；若后续 step 持续 >10 = 师生分布炸的前兆，停训排查。
+3. **rollout_ppl 上涨 18→162**：配合 resp_len 涨，student 生成更长更多样；但 ppl_ratio 从 340 降到 122（师生/训练-采样分布对齐中，趋势向好）。摘要开放式生成 ppl 绝对值参考意义有限，看 ppl_ratio 下降这个好信号。
+
+**结论**：训练健康，继续。vopd_loss 持续收敛（-87%）+ 蒸馏全程生效 + mopd 分支正确 + grad/显存稳定。EMA teacher 的 `teacher_topk_mass_mean` 从 0.979 降到 0.828（分布变平、监督能力衰减），印证 §12.2 结论——mopd 推迟退化但不根治，根治需 v4 固定 teacher。
+
+**继续训期间监控判据**：
+
+| 信号 | 阈值 | 动作 |
+|---|---|---|
+| resp_len 加速上涨 | 破 500 | 考虑早停 |
+| clip_ratio | 破 0.1 | 考虑早停 |
+| step428 后 chi2_token | 持续 >10 | 停训排查师生分布 |
+| actor/vopd_loss | 反弹上涨 | 蒸馏失效，停训 |
+| actor/grad_norm | 突 >100 | 训练发散，停训 |
+
+**分析脚本**（`scripts/`）：
+
+```bash
+python scripts/analyze_loss.py    # 六类指标分段趋势 + 关键诊断（① 蒸馏/分支/vopd/resp_len/kl/grad/显存/速度）
+python scripts/detail_metrics.py  # 可疑指标逐 step 序列 + chi2/resp_len 尖峰定位 + 线性斜率
 ```
 
 #### 5.4.6 ⚠️ 配置漏传事故复盘（2026-09-01）
@@ -619,6 +667,8 @@ python /data4/wumeimei/flash_note/train/gen_lr_images.py --from-parquet .runtime
 | 本地模型 | `/data4/wumeimei/download_models/Qwen3.5-9B` |
 | 评测脚本 | `/data4/wumeimei/flash_note/auto_eval/evaluators/run_qwen38_27b_recipe_eval.sh` |
 | 测试集 | `/data4/wumeimei/flash_note/test_data/{en,fr,ru,zh}_image/` |
+| tensorboard 日志 | `RP-OPSD/tensorboard_log/RP-OPSD/<experiment_name>/`（仓库根，非 output_dir） |
+| loss 分析脚本 | `RP-OPSD/scripts/analyze_loss.py`（文本log分段趋势）、`scripts/detail_metrics.py`（逐step+尖峰）、`scripts/analyze_tfevents.py`（tfevents解析，文本log不在本机时用）|
 
 ---
 
@@ -771,16 +821,19 @@ bash scripts/run_flashnote_sft.sh
 
 ---
 
-## 12. 方案版本矩阵（v2 / v3 / v4）
+## 12. 方案版本矩阵（v2 / v3 / v3-no-ema / v3-SFT / v4）
 
-三个变体共享 mopd + 分辨率特权 + 5k 口径 + alpha1.0，只换 student 起点 或 teacher 更新策略。目的是隔离退化因素（EMA 正反馈 vs student 起点质量）。
+变体共享 mopd + 分辨率特权 + 5k 口径 + alpha1.0，只换 student 起点 或 teacher 更新策略。目的是隔离退化因素（EMA 正反馈 vs student 起点质量）。
 
 | 版本 | Student 起点 | Teacher | 目的 | 运行机器 | 状态 |
 |---|---|---|---|---|---|
 | **v2**（base） | base Qwen3.5-9B | EMA ρ=0.05 | 基线复现 | m4 | ❌ 退化（漏传 mopd，详见 §5.4.6） |
-| **v3**（base+mopd） | base Qwen3.5-9B | EMA ρ=0.05 | mopd 修复基线 | m4 | ✅ 跑中（`flashnote_train_v4`，step18 mean266 健康） |
-| **v3-SFT**（SFT warm-start） | sft_gold_397b_lora_r64_m2 merged/step_2250（2.5epoch, MOS4.064）| EMA ρ=0.05 | SFT 拉齐基础再自蒸馏精修，起点更高防 drift | m3 | ⏳ 待启动 |
-| **v4**（固定 teacher） | base Qwen3.5-9B | **固定不更新**（rate=0） | 根治 EMA 正反馈退化，teacher 提供稳定锚点 | m2 | ⏳ 待启动 |
+| **v3**（base+mopd） | base Qwen3.5-9B | EMA ρ=0.05 | mopd 修复基线 | m4 | ⚠️ step451 仍在跑但已退化（mixed% 78.6%@step441，见 §5.4.5.1 + rollout 分析）|
+| **v3-no-ema**（关 EMA） | base Qwen3.5-9B | **固定不更新**（rate=0，ema 模式但冻结） | 隔离 EMA 正反馈因素，与 v3 base 同起点对照 | **m3** | ⏳ 待启动（`scripts/run_rp_opsd_v3_no_ema.sh`） |
+| **v3-SFT**（SFT warm-start） | sft_gold_397b_lora_r64_m2 merged/step_2250（2.5epoch, MOS4.064）| EMA ρ=0.05 | SFT 拉齐基础再自蒸馏精修，起点更高防 drift | m3 | ⚠️ 中度退化（step459 实测，退化比 v3 更重，推翻预期，见 §12.1.1） |
+| **v4**（SFT warm-start + 固定 teacher） | sft_gold_397b_lora_r64_m2 merged/step_2250（2.5epoch, MOS4.064）| **固定不更新**（rate=0） | 组合 SFT 起点优势 + 消除 EMA 正反馈退化，根治方案 | **m4** | ⏳ 待启动（`scripts/run_rp_opsd_v4.sh`） |
+
+> **v3-no-ema vs v4**：两者都关 EMA（`teacher_regularization=ema` + `teacher_update_rate=0.0`，框架不支持 `none`，见 `verl/workers/config/actor.py:130`），但 student 起点不同——v3-no-ema 用 base 9B（与 v3 base 同起点，隔离 EMA 因素，m3 跑），v4 用 SFT warm-start step_2250（组合 SFT 优势 + 固定 teacher，作为根治方案，m4 跑）。v3-no-ema 是 v3 的关 EMA 消融，v4 是 v3-SFT 的关 EMA 升级。
 
 ### 12.1 v3-SFT（SFT warm-start student）
 
@@ -795,35 +848,176 @@ OUTPUT_DIR="/data3/wumeimei/flash_note/flashnote_train_v3sft"   # /data3（1.2T 
 ```
 teacher 仍 EMA ρ=0.05（teacher 从 SFT ckpt 初始化，慢速跟随 student）。mopd/分辨率特权/5k 口径/alpha1.0 全不变。
 
-**注意**：SFT warm-start 提高起点但**不根治退化**——EMA teacher 仍无外部锚点。预期退化起始推迟、幅度减小，但需 step150 评估确认（盯 `response_length/mean` 是否上涨，判据见 §5.4.5）。
+**注意**：SFT warm-start 提高起点但**不根治退化**——EMA teacher 仍无外部锚点。~~预期退化起始推迟、幅度减小~~（⚠️ 2026-09-02 实测**推翻**此预期，v3-SFT 退化反而比 v3 更早更重，见 §12.1.1）。
 
-### 12.2 v4（固定 teacher，机器2）
+#### 12.1.1 实测健康分析（2026-09-02，step459）
 
-**思路**：EMA teacher 紧跟 student 是正反馈退化的根因（§5.4.6）。固定 teacher（不随 student 更新）提供绝对稳定锚点，student 向一个不动的 teacher 分布对齐，从机制上消除正反馈。cross_model_distillation_zh.md 已验证固定 9B teacher 不退化（7 benchmark 6 提升）。
+v3-SFT 运行至 step459/1502（30%，仍在 m3 跑）。用 `scripts/analyze_tfevents.py` 解析 tfevents（文本 log 在 m3 本地，tfevents 经 sshfs cwd 落 m4 仓库根 `tensorboard_log/RP-OPSD/RP-OPSD-Qwen3.5-9B-v3sft/`）。
+
+**核心发现：⚠️ 中度退化，形态与 v3 相反——"目标对齐但行为漂移"**
+
+蒸馏目标指标全绿（teacher top-100 support 上对齐），但生成长度/分布失控（top-100 之外长尾漂移）——mopd 蒸馏被"钻空子"。
+
+| 指标类别 | 蒸馏目标（健康↓） | 生成行为（失控↑） |
+|---|---|---|
+| vopd_loss | 0.214→0.009（-90%）✅ | — |
+| kl | 0.179→0.014（-81%）✅ | — |
+| chi2_token | 1.24→0.035（-86%，**无末段尖峰**）✅ | — |
+| response_length/mean | — | 230→501（+125%）⚠️ |
+| clip_ratio | — | 0.01→0.092（逼近 0.1 早停线）⚠️ |
+| rollout_ppl | — | 4.9→117（指数涨）⚠️ |
+| teacher_topk_mass | 0.997→0.857（teacher 分布变平） | — |
+
+逐 step 拐点：resp_len 无平台期单调上涨，step 241（441）→ 271（500）加速，之后在 476–517 高位震荡（未继续冲高亦未回落）。clip_ratio 从 step 241 破 0.06、271 破 0.09 并持续高位。ro_ppl 从 step 241（10.9）起指数加速。
+
+**vs v3 对比（同进度 ~30%）**
+
+| 指标 | v3 (base+mopd) | v3-SFT (SFT warm-start) |
+|---|---|---|
+| vopd 末5均 | 0.0099 | 0.0079（更优） |
+| kl 末5均 | 0.064 | 0.014（更优） |
+| chi2 末5均 | 29.7（尖峰⚠️） | 0.052（干净✅） |
+| **resp_len 末5均** | 383（+26%） | **501（+125%）⚠️** |
+| **clip_ratio 末5均** | 0.022 | **0.092⚠️ 逼近0.1** |
+| ro_ppl 末5均 | 162 | 102（但起点 4.9 → 涨 2444%） |
+| grad_norm max | 25.3 | 171.3（均在 warmup 75 步内，非退化信号） |
+
+**⚠️ 推翻 §12.1 预期的原因**
+
+原预期"SFT warm-start 推迟退化起始、减小幅度"，实测相反。根因：
+1. SFT student 起点高、生成更确定/更长，on-policy rollout 8 条轨迹偏长且相似 → 长度正反馈更强
+2. SFT 学到的摘要长度先验在 LR 视图下被打破，student 用更长生成补偿低分辨率信息缺失
+3. EMA teacher 从 SFT 初始化，师生初始几乎相同 → 早期梯度信号弱，长度漂移正反馈持续积累
+4. teacher 跟 student 变平（tkmass 0.997→0.857），无法约束长尾
+
+**退化形态对比**：v2（漏传 mopd）= 长度冲到 737 持续暴涨；v3-SFT（mopd 正确）= 长度到 500 后高位震荡。mopd 的 teacher 选 support 起了部分约束（未像 v2 发散），但未根治。
+
+**结论与建议**：
+- v3-SFT **考虑早停**（resp_len 破 500 + clip 逼近 0.1 + ro_ppl 指数涨，退化趋势明确）
+- 蒸馏目标的"健康"是**虚假的**——top-100 对齐好但长尾失控，监控不能只看 vopd/kl，必看 `response_length/mean` + `clip_ratio`
+- 根因仍是 EMA 无外部锚点 + 开放式摘要无长度约束，SFT 起点不解决反加剧长度漂移
+- 进一步支持 v4 固定 teacher 路线
+
+### 12.2 v4（SFT warm-start + 固定 teacher，机器4 m4）
+
+**思路**：v3-SFT 已证明 SFT 起点 + EMA 仍退化（§12.1.1），根因是 EMA teacher 无外部锚点。v4 组合两条修复：SFT warm-start student（起点高）+ 固定 teacher 不随 student 更新（消除正反馈），是同时拿到 SFT 优势 + 根治退化的方案。cross_model_distillation_zh.md 已验证固定 teacher 不退化（7 benchmark 6 提升）。
 
 **固定 teacher 两种实现**（框架 `actor.py:72-73,183` 支持）：
 
 | 方式 | 配置 | 显存 | 说明 |
 |---|---|---|---|
-| **A. rate=0**（推荐起步） | `teacher_regularization=ema` + `teacher_update_rate=0.0` | 不额外占（teacher 复用 student 初始副本） | teacher = student 初始 base 9B 冻结，最小改动 |
-| **B. fixed source** | `teacher_model_source=fixed` + `teacher_model_path=<path>` | +1 份 9B 权重 | teacher 用独立权重（如 SFT 9B），质量更高但显存翻倍 |
+| **A. rate=0**（v4 选用） | `teacher_regularization=ema` + `teacher_update_rate=0.0` | 不额外占（teacher 复用 student 初始副本） | teacher = student 初始 SFT 权重冻结，最小改动 |
+| **B. fixed source** | `teacher_model_source=fixed` + `teacher_model_path=<path>` | +1 份 9B 权重 | teacher 用独立权重（如另载 base 9B），显存翻倍 |
 
-v2 配置基础上改（`run_rp_opsd_v2.sh` 顶部）：
+v2/v3 base 配置基础上改（`run_rp_opsd_v4.sh` 顶部）：
 ```bash
-TEACHER_REGULARIZATION="ema"        # 保持 ema 模式
-TEACHER_UPDATE_RATE=0.0             # ★ rate=0 → teacher 冻结在初始值，等价固定
+MODEL_PATH="/data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_sft_gold_397b_lora_r64_m2/merged/step_2250"   # ★ SFT warm-start student
+TEACHER_REGULARIZATION="ema"        # 保持 ema 模式（框架不支持 none）
+TEACHER_UPDATE_RATE=0.0             # ★ rate=0 → teacher 冻结在 SFT 初始值，等价固定
 OUTPUT_DIR="/data3/wumeimei/flash_note/flashnote_train_v4_fixed_teacher"   # /data3（1.2T 可用）
 ```
-命令行 override 对应 `actor_rollout_ref.actor.self_distillation.teacher_update_rate=0.0`。其余（mopd/分辨率特权/5k/base 9B student）全同 v2。
+命令行 override 对应 `actor_rollout_ref.actor.self_distillation.teacher_update_rate=0.0`。其余（mopd/分辨率特权/5k）全同 v2/v3 base。
 
-**机器2 运行注意**（详见 skill `cross-machine-train-deploy`）：
-- sshfs 同名挂载 `/data4` `/data1`，miniforge3 路径零改（脚本/数据/conda/base 模型都可见）
-- `TMPDIR` 指本地 `/tmp`（sshfs 无写权限坑，脚本已内置 `TMPDIR=/tmp/rp_opsd_v4`）
-- `MASTER_PORT` 29500 被占→换 29501（脚本已内置）
-- triton/HF cache 本地化（脚本已内置，首 step 冷启动慢）
-- v4 用 legacy source（teacher=student 副本），**不涉及外部教师服务**，无假健康检查坑
-- m2 的 `/data3/wumeimei/flash_note` 需先建（m2 本地盘，输出写本地）
-- 启动前先 `tmux kill-session -t idleprotect_g{0..7}`（m2 也有 idle_protect cron，抢 GPU 同坑）
-- m2 必须 `sudo -u meimei.wu -i` 切身份才通（ec2-user 直连 Permission denied）
+**机器4 运行注意**（v4 改到 m4 本机跑）：
+- m4 是本机，`/data4/wumeimei/flash_note/RP-OPSD` 直接访问，无 sshfs
+- `OUTPUT_DIR=$PROJECT_ROOT/outputs/flashnote_train_v4_fixed_teacher`（m4 本地 `/data4`）
+- `TMPDIR=/tmp/rp_opsd_v4` + `MASTER_PORT=29504`（避免与 v3 base 29500、v3-no-ema 29503 撞端口）
+- 启动前先 `tmux ls | grep idleprotect` 并 kill 目标卡的保护任务（feedback_kill_idle_protect_before_train）
+- 启动前先 `pkill -f run_rp_opsd_v2.sh` 停掉 v3 base 腾出 8 卡
 
-**预期**：固定 teacher 根治 EMA 正反馈，`response_length/mean` 应稳定不涨。但 base 9B teacher 质量低（不会摘要），student 向低质量 teacher 对齐可能限制上限——若效果不佳，升级方式 B 用 SFT 9B 做固定 teacher。
+**预期**：固定 teacher 根治 EMA 正反馈，`response_length/mean` 应稳定不涨。teacher = SFT warm-start 初始值（已会摘要，MOS 4.064），比 base 9B teacher 质量高，student 向高质量 teacher 对齐上限更高——优于 v4 原方案（base 9B teacher）。
+
+### 12.3 长训练退化复盘（2026-09-02）
+
+**动机**：v3 base 跑到 step 451 仍持续退化（mixed% 78.6%@step441，见 §5.4.5.1），但作者论文报告 9B 不退化。需定位是参数错还是训练量超作者验证范围。
+
+#### 12.3.1 作者 9B 配置 vs 我们 v3 base 配置
+
+| 参数 | 作者 9B（论文 §训练设置 + 附录 B 补充表 2/3）| 我们 v3 base | 差异 |
+|---|---|---|---|
+| 训练集 | 5.2K 样本（Vision-SR1 + VLM-CapCurriculum + ZwZ-RL-VQA + Vision-OPD）| 72k（flashnote 4 语种摘要）| 14× |
+| epoch | 1 | 2 | 2× |
+| **优化步数** | **55** | 1502 | **27×** |
+| batch_size | 96 | 96 | ✅ |
+| lr | 2e-6 | 2e-6 | ✅ |
+| warmup | 10 | 75 | 7.5× |
+| max_response_length | 1024 | 2048 | 2× |
+| max_prompt_length | 8192 | 3072 | 短（实际只用 1700 token）|
+| max_seq_length | 9216 | 5120 | 短 |
+| rollout n | 8 | 8 | ✅ |
+| EMA ρ | 0.05 | 0.05 | ✅ |
+| distillation_topk | 100 | 100 | ✅ |
+| distillation_objective | mopd_topk_reverse_kl | mopd_topk_reverse_kl | ✅ |
+| topk_source | teacher | teacher | ✅ |
+| 9B 训练时间 | 7.83h | ~80h | 10× |
+
+**自蒸馏参数（5 项）作者默认 ≠ 我们**，但我们用的是 MOPD 论文最优组合（表 3 消融），不是错：
+
+| 参数 | 作者默认（actor.py:80-90）| 我们 v3 | 备注 |
+|---|---|---|---|
+| distillation_objective | generalized_jsd | mopd_topk_reverse_kl | MOPD 论文最优（表 3）|
+| distillation_topk | None（全分布）| 100 | MOPD 论文最优 |
+| distillation_topk_source | student | teacher | MOPD 要求 |
+| distillation_add_tail | True | False | MOPD 要求 |
+| alpha | 0.0（forward KL）| 1.0（reverse KL）| MOPD 要求 |
+
+#### 12.3.2 55 步以内 rollout 分析（v3 base + v3-SFT）
+
+直接分析两个运行的前 55 步 rollout（mixed% = 输出含 2+ 语种 token 的比例）：
+
+| step | v3 base mixed% | v3 base avg_len | v3-SFT mixed% | v3-SFT avg_len |
+|---|---|---|---|---|
+| 1 | 37.6 | 1040 | 32.8 | 854 |
+| 11 | 38.0 | 1027 | 29.7 | 833 |
+| 21 | 37.9 | 1118 | 31.4 | 823 |
+| 31 | 34.8 | 1104 | 29.0 | 824 |
+| 41 | 40.1 | 1106 | 34.5 | 862 |
+| 51 | 37.2 | 1207 | 31.5 | 946 |
+
+**观察**：
+- 前 55 步两个版本 mixed% 都**持平震荡，无上涨趋势**——符合论文报告不退化
+- base 9B 起步 mixed=37.6% **本身就高**，这不是退化，是模型在 LR（半分辨率）图像上的初始行为（base 9B 看模糊图倾向跨语种 token 补偿）
+- v3-SFT 起步 mixed=32.8%，比 base 9B 低 5 个点——SFT 确实让模型更语种纯净
+- avg_len 全程稳定 820-1210，无长度膨胀
+
+#### 12.3.3 退化时间线
+
+| step 区间 | v3 base mixed% | v3-SFT mixed% | 状态 |
+|---|---|---|---|
+| 1-55（作者验证范围）| 34-40% 持平 | 29-35% 持平 | ✅ 不退化 |
+| 55-200（模糊地带）| 缓慢上升 | 缓慢上升 | ⚠️ 漂移累积 |
+| 200+ | 46%@221 | — | ❌ 退化起始 |
+| 440+ | 78.6%@441 | 50%@459 | ❌ 严重退化 |
+
+#### 12.3.4 关键结论
+
+1. **作者论文没错**——55 步内方法安全，论文报告真实
+2. **作者只验证了短训练**——搜遍论文正文 + 附录 B/C + `cross_model_distillation_zh.md`，关键词 `long|extend|更多|更长|多.*epoch|prolong|over.?train|稳定|stabil|收敛|collapse|退化|degrad|drift` 全部 0 命中（除"1 Epoch 共 55 Steps"这一条）。补充表 3 训练计划列写死"1 epoch / 55 步"，检查点列"最终步"——作者设计上就只跑 55 步
+3. **我们错在误把"作者验证过的方法"当成"长训练下也安全的方法"**——直接把训练量放大 27×（72k × 2epoch = 1502 步）没做渐进验证
+4. **退化起始点在 step 200+**，完全在作者验证范围外
+5. **EMA 在长训练下必然退化**——作者表 4 消融"EMA vs fixed teacher"在 55 步内做，EMA 略优（82.73 vs 82.22）；长训练下 EMA teacher 持续累积漂移，fixed teacher 是合理外推
+
+#### 12.3.5 修复路径
+
+**v3-no-ema（m3）+ v4（m4）**：都用固定 teacher（`teacher_update_rate=0.0`）消除 EMA 长训练正反馈。其他参数全同 v3 base（包括 topk=100、max_resp=2048、warmup=75、2 epoch）——**只改 teacher 更新策略一个变量**，隔离 EMA 因素。
+
+**不改的参数**（作者消融已验证最优）：
+- `distillation_topk=100`（表 3 消融最优，不要扩到 500）
+- `mopd_topk_reverse_kl + topk_source=teacher + add_tail=False + alpha=1.0`（MOPD 论文最优组合）
+- `batch 96, lr 2e-6, rollout n=8`（对齐作者）
+
+**保留的变量**（不对齐作者，因我们任务不同）：
+- `max_response_length=2048`（摘要需要更长输出，作者 max_resp=1024 是单语种 perception 任务）
+- `max_prompt_length=3072`（实测 prompt ~1700 token，3072 是 1.8× 余量）
+- `total_epochs=2`（72k 数据 1 epoch = 750 步，仍远超作者 55 步，但 2 epoch 是任务需要）
+- `lr_warmup_steps=75`（1502 步 × 0.7% = 10.5 步对齐作者比例，但 75 步更稳）
+
+#### 12.3.6 监控补强
+
+之前 §5.4.5.1 把 v3 step428 判为"健康"是错的——只看 vopd/kl/chi2 三个 top-100 support 指标。语言混杂是**长尾失控**的具体表现，监控必加：
+
+- `mixed_language_rate`（en/zh/other 语种检测）— 用 Unicode 范围扫描
+- `response_length/mean` + `clip_ratio`（已有）
+- `rollout_ppl`（已有，student 在自己策略下 token 概率，>100 就是漂移信号）
+
+后续 v3-no-ema / v4 启动后必须监控这 4 个指标，不能只看 vopd/kl。

@@ -1,29 +1,30 @@
 #!/usr/bin/env bash
 # =============================================================================
-# RP-OPSD v4 单文件训练启动脚本（固定 teacher + SFT warm-start，机器4 m4 本机）
-# 与 v3 base 区别：
-#   - student 从 base 9B 换成 SFT warm-start（sft_gold_397b_lora_r64_m2/merged/step_2250）
-#   - teacher 从 EMA 改成固定不更新（rate=0.0）
-# 组合动机：v3-SFT 已证明 SFT 起点 + EMA 仍退化（§12.1.1），v4 组合 SFT 起点 + 固定 teacher
-#   = 同时拿到 SFT 起点优势 + 消除 EMA 正反馈退化，是"根治方案"
-#   - teacher = 固定（teacher_update_rate=0.0，EMA 形式 rate=0 = 冻结在 student 初始 SFT 权重）
-#   - mopd/分辨率特权/5k口径/alpha1.0 全同 v3 base
+# RP-OPSD v3-no-ema 单文件训练启动脚本（关 EMA，机器3 m3 跨机）
+# 与 v3 base 区别仅：teacher_update_rate 0.05→0.0（teacher 仍在 ema 模式但永不更新，
+#   等价固定在 student 初始 base 9B，从机制上消除 EMA 正反馈退化）
+#   - student = base Qwen3.5-9B（同 v3）
+#   - teacher = student 初始副本冻结（legacy source + ema + rate=0）
+#   - mopd/分辨率特权/5k 口径/alpha1.0 全同 v3 base
+# 框架坑: teacher_regularization 只接受 ema/trust-region/progressive（actor.py:130），
+#   不支持 "none"；关 EMA 的正确写法是保持 ema + rate=0.0
 # 长度口径: max_prompt(3072) + max_response(2048) = 5120 (5k)
-# 启动: bash scripts/run_rp_opsd_v4.sh
+# 启动: bash scripts/run_rp_opsd_v3_no_ema.sh
 # 日志: tee 到 $OUTPUT_DIR/logs/train.log
+# 跨机 m3 注意: TMPDIR/MASTER_PORT/CACHE 本地化（见环境变量段）
 # =============================================================================
 
 # ---------- 路径与运行身份 ----------
 PROJECT_ROOT="/data4/wumeimei/flash_note/RP-OPSD"
-MODEL_PATH="/data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_sft_gold_397b_lora_r64_m2/merged/step_2250"
+MODEL_PATH="/data4/wumeimei/download_models/Qwen3.5-9B"
 CONDA_ENV="verl_opd_flashnote"
 CONDA_SH="/data1/meimei.wu/miniforge3/etc/profile.d/conda.sh"
-OUTPUT_DIR="$PROJECT_ROOT/outputs/flashnote_train_v4_fixed_teacher"
+OUTPUT_DIR="/data1/meimei.wu/flash_note/flashnote_train_v3_no_ema"
 TASK_TRAIN_FILE="$PROJECT_ROOT/.runtime/flashnote_summary/train.parquet"
 CUSTOM_CHAT_TEMPLATE_FILE="$PROJECT_ROOT/chat_templates/perception_chat_template_qwen35.jinja"
 
 # ---------- 实验元数据 ----------
-EXPERIMENT_NAME="RP-OPSD-Qwen3.5-9B-v4-fixed-teacher"
+EXPERIMENT_NAME="RP-OPSD-Qwen3.5-9B-v3-no-ema"
 PROJECT_NAME="RP-OPSD"
 CONFIG_NAME="vopd"
 
@@ -51,6 +52,7 @@ TRAINER_NNODES=$WORLD_SIZE
 # ---------- 学习率 / 训练步数 ----------
 # LR_WARMUP_STEPS 10→75：72k 数据集 × 2epoch = 1502 步，10 步 warmup 仅 0.7%
 #   teacher EMA 半衰期 ~14 步（rate=0.05），75 步 ≈ 5 个半衰期让 teacher 充分收敛
+#   no-ema 下 rate=0，teacher 不收敛而是直接冻结，warmup 75 步保留以对齐 v3
 LR=2e-6
 LR_WARMUP_STEPS=75
 TRAINER_TOTAL_EPOCHS=2
@@ -70,9 +72,10 @@ REF_LOGPROB_MICRO_BATCH_SIZE_PER_GPU=1
 ROLLOUT_AGENT_NUM_WORKERS=8
 
 # ---------- 自蒸馏 / Teacher ----------
+# ★ no-ema：rate 0.05→0.0，teacher 保持在 student 初始 base 9B 不更新
 TEACHER_MODEL_SOURCE="legacy"
-TEACHER_REGULARIZATION="ema"
-TEACHER_UPDATE_RATE=0.0   # ★ rate=0 → teacher 冻结在 student 初始值，等价固定（根治 EMA 正反馈退化）
+TEACHER_REGULARIZATION="ema"      # 框架不支持 "none"；保持 ema + rate=0 等价关 EMA
+TEACHER_UPDATE_RATE=0.0
 ALPHA=1.0
 DONT_REPROMPT_ON_SELF_SUCCESS=True
 DISTILLATION_TOPK=100
@@ -98,17 +101,16 @@ export HYDRA_FULL_ERROR=1
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 ulimit -c 0
 
-# ---------- m4 本机配置（/data4 直接访问，/dev/shm tmpfs 965G）----------
-# 坑1: TMPDIR=/tmp 在根盘 vda2（m4 根盘 99G/70G 74%，剩 25G 训练几个 step 必爆）→ 改 /dev/shm tmpfs 965G
+# ---------- 跨机 m3 配置（sshfs 挂载 /data4+/data1，但 /tmp 与 cache 必须本地化）----------
+# 坑1: TMPDIR=/tmp 指向根盘 vda2（m3 根盘 99G/94G 100% 满），ray 报 95% full → 改 /dev/shm tmpfs 965G
 #   （记忆 verl-tmpdir-shm: verl/ray TMPDIR 必须用 tmpfs 不能用 NFS）
-# 坑2: MASTER_PORT 29500 被 v3 base 占 → 换 29504（v3 用 29500，v3sft 在 m3 用 29501，v3-no-ema 在 m3 用 29503）
+# 坑2: MASTER_PORT 29500 被占 → 换 29503（v3 用 29500，v3sft 在 m3 用 29501，v4 在 m4 用 29504）
 # 坑3: triton cache 冷启动竞态 → 本地化（首 step 会慢，后续正常）
-# v4 用 legacy source（teacher=student 副本），无外部教师服务，无假健康检查坑
-export TMPDIR="/dev/shm/rp_opsd_v4"
+export TMPDIR="/dev/shm/rp_opsd_v3_no_ema"
 export HF_DATASETS_CACHE="$TMPDIR/hf_datasets"
 export TRITON_CACHE_DIR="$TMPDIR/triton"
 export HF_HOME="$TMPDIR/hf_home"
-export MASTER_PORT=29504
+export MASTER_PORT=29503
 mkdir -p "$TMPDIR" "$HF_DATASETS_CACHE" "$TRITON_CACHE_DIR" "$HF_HOME"
 
 # ---------- 初始化 ----------
@@ -121,10 +123,11 @@ source "$CONDA_SH"
 conda activate "$CONDA_ENV"
 
 cd "$PROJECT_ROOT"
-echo "[run_rp_opsd_v2] experiment=$EXPERIMENT_NAME"
-echo "[run_rp_opsd_v2] max_prompt=$MAX_PROMPT_LENGTH max_response=$MAX_RESPONSE_LENGTH max_model_len=$MAX_MODEL_LEN ppo_max_token_len_per_gpu=$PPO_MAX_TOKEN_LEN_PER_GPU"
-echo "[run_rp_opsd_v2] data=$TASK_TRAIN_FILE"
-echo "[run_rp_opsd_v2] output=$OUTPUT_DIR"
+echo "[run_rp_opsd_v3_no_ema] experiment=$EXPERIMENT_NAME"
+echo "[run_rp_opsd_v3_no_ema] max_prompt=$MAX_PROMPT_LENGTH max_response=$MAX_RESPONSE_LENGTH max_model_len=$MAX_MODEL_LEN ppo_max_token_len_per_gpu=$PPO_MAX_TOKEN_LEN_PER_GPU"
+echo "[run_rp_opsd_v3_no_ema] data=$TASK_TRAIN_FILE"
+echo "[run_rp_opsd_v3_no_ema] output=$OUTPUT_DIR"
+echo "[run_rp_opsd_v3_no_ema] teacher_regularization=$TEACHER_REGULARIZATION teacher_update_rate=$TEACHER_UPDATE_RATE (no-ema: teacher frozen at student initial)"
 
 # ---------- 启动训练 ----------
 python3 -m verl.trainer.main_ppo --config-name "$CONFIG_NAME" \
