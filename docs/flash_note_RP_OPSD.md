@@ -821,19 +821,23 @@ bash scripts/run_flashnote_sft.sh
 
 ---
 
-## 12. 方案版本矩阵（v2 / v3 / v3-no-ema / v3-SFT / v4）
+## 12. 方案版本矩阵（v2 / v3 / v3-no-ema / v3-SFT / v4 / v5）
 
-变体共享 mopd + 分辨率特权 + 5k 口径 + alpha1.0，只换 student 起点 或 teacher 更新策略。目的是隔离退化因素（EMA 正反馈 vs student 起点质量）。
+变体共享 mopd + 分辨率特权 + 5k 口径 + alpha1.0，只换 student 起点 或 teacher 更新策略。目的是隔离退化因素（EMA 正反馈 vs student 起点质量 vs teacher 模型能力）。
 
 | 版本 | Student 起点 | Teacher | 目的 | 运行机器 | 状态 |
 |---|---|---|---|---|---|
 | **v2**（base） | base Qwen3.5-9B | EMA ρ=0.05 | 基线复现 | m4 | ❌ 退化（漏传 mopd，详见 §5.4.6） |
 | **v3**（base+mopd） | base Qwen3.5-9B | EMA ρ=0.05 | mopd 修复基线 | m4 | ⚠️ step451 仍在跑但已退化（mixed% 78.6%@step441，见 §5.4.5.1 + rollout 分析）|
-| **v3-no-ema**（关 EMA） | base Qwen3.5-9B | **固定不更新**（rate=0，ema 模式但冻结） | 隔离 EMA 正反馈因素，与 v3 base 同起点对照 | **m3** | ⏳ 待启动（`scripts/run_rp_opsd_v3_no_ema.sh`） |
-| **v3-SFT**（SFT warm-start） | sft_gold_397b_lora_r64_m2 merged/step_2250（2.5epoch, MOS4.064）| EMA ρ=0.05 | SFT 拉齐基础再自蒸馏精修，起点更高防 drift | m3 | ⚠️ 中度退化（step459 实测，退化比 v3 更重，推翻预期，见 §12.1.1） |
-| **v4**（SFT warm-start + 固定 teacher） | sft_gold_397b_lora_r64_m2 merged/step_2250（2.5epoch, MOS4.064）| **固定不更新**（rate=0） | 组合 SFT 起点优势 + 消除 EMA 正反馈退化，根治方案 | **m4** | ⏳ 待启动（`scripts/run_rp_opsd_v4.sh`） |
+| **v3-no-ema**（关 EMA） | base Qwen3.5-9B | **固定不更新**（rate=0，ema 模式但冻结，`teacher_model_source=legacy`） | 隔离 EMA 正反馈因素，与 v3 base 同起点对照 | **m3** | ✅ 已启动（2026-09-02，`scripts/run_rp_opsd_v3_no_ema.sh`），step221 健康 training_ppl=18 ✅（见 §12.3.1） |
+| **v3-SFT**（SFT warm-start） | sft_gold_397b_lora_r64_m2 merged/step_2250（2.5epoch, MOS4.064）| EMA ρ=0.05 | SFT 拉齐基础再自蒸馏精修，起点更高防 drift | m3 | ⚠️ 中度退化（step459 实测，退化比 v3 更重，推翻预期，见 §12.1.1），2026-09-02 已停换成 v3-no-ema |
+| **v4**（SFT warm-start + 固定 teacher） | sft_gold_397b_lora_r64_m2 merged/step_2250（2.5epoch, MOS4.064）| **固定不更新**（rate=0，`teacher_model_source=legacy`） | 组合 SFT 起点优势 + 消除 EMA 正反馈退化，根治方案 | m4（原计划）| ❌ 已停（2026-09-03 step214 时停掉，SFT 起点尖锐分布 + 固定 9B teacher 错配：training_ppl 从 step1 就 3.6e4，vopd_loss 0.13 收敛慢，换成 v5） |
+| **v5**（9B student + **27B 外部 teacher**） | base Qwen3.5-9B | **外部 27B 固定 teacher**（Qwen3.8-27B，`teacher_model_source=fixed` + `teacher_model_path`，rate=0） | 用更强 27B teacher 提供更高质量蒸馏信号 + 仍固定不退化 | **m4** | ✅ 已启动（2026-09-03，`scripts/run_rp_opsd_v5_teacher27B.sh`），step1 健康 training_ppl=6.54 ✅（见 §12.4） |
 
-> **v3-no-ema vs v4**：两者都关 EMA（`teacher_regularization=ema` + `teacher_update_rate=0.0`，框架不支持 `none`，见 `verl/workers/config/actor.py:130`），但 student 起点不同——v3-no-ema 用 base 9B（与 v3 base 同起点，隔离 EMA 因素，m3 跑），v4 用 SFT warm-start step_2250（组合 SFT 优势 + 固定 teacher，作为根治方案，m4 跑）。v3-no-ema 是 v3 的关 EMA 消融，v4 是 v3-SFT 的关 EMA 升级。
+> **v3-no-ema vs v4 vs v5**：三者都关 EMA（`teacher_regularization=ema` + `teacher_update_rate=0.0`，框架不支持 `none`，见 `verl/workers/config/actor.py:130`），但 student 起点和 teacher 来源不同：
+> - **v3-no-ema**（m3）：base 9B student + legacy 固定 teacher（=student 初始副本）。自蒸馏对照，隔离 EMA 因素。
+> - **v4**（m4，已停）：SFT warm-start student + legacy 固定 teacher（=student 初始 SFT 副本）。SFT 起点尖锐分布与固定 teacher 错配，step1 ppl=3.6e4。
+> - **v5**（m4）：base 9B student + **外部 27B 固定 teacher**（`source=fixed` + `teacher_model_path=Qwen3.8-27B`）。27B 比 9B teacher 更强，logit 分布更平滑，student 容易学（step1 ppl=6.54，比 v3-no-ema 的 4.52 略高但合理）。
 
 ### 12.1 v3-SFT（SFT warm-start student）
 
@@ -1021,3 +1025,161 @@ OUTPUT_DIR="/data3/wumeimei/flash_note/flashnote_train_v4_fixed_teacher"   # /da
 - `rollout_ppl`（已有，student 在自己策略下 token 概率，>100 就是漂移信号）
 
 后续 v3-no-ema / v4 启动后必须监控这 4 个指标，不能只看 vopd/kl。
+
+### 12.4 v5（base 9B student + 外部 27B 固定 teacher，机器4 m4）
+
+**思路**：v4（SFT warm-start + legacy 固定 9B teacher）已证明"SFT 起点尖锐分布 + 固定同尺寸 teacher"是错配——step1 training_ppl 就 3.6e4，student 演化后偏离 teacher top-k 越来越远（见 §12.4.4 v4 实测）。v5 换思路：用**更强 27B 外部模型当固定 teacher**，提供更高质量蒸馏信号 + logit 分布更平滑（27B 比 9B 不会过度尖锐），student 容易学且不退化。
+
+**配置**（`scripts/run_rp_opsd_v5_teacher27B.sh`，相对 v3 base 只改 4 行）：
+```bash
+MODEL_PATH="/data4/wumeimei/download_models/Qwen3.5-9B"             # student 回到 base 9B（同 v3，未训练）
+TEACHER_MODEL_SOURCE="fixed"                                          # 从 legacy 改成 fixed（外部 teacher）
+TEACHER_MODEL_PATH="/data4/wumeimei/download_models/Qwen3.8-27B"     # 外部 27B teacher 路径
+TEACHER_UPDATE_RATE=0.0                                               # 固定不更新（rate=0）
+# 其余 mopd / 5k 口径 / batch / lr / warmup 全同 v3 base
+# OUTPUT_DIR=outputs/flashnote_train_v5_teacher27B
+# TMPDIR=/dev/shm/rp_opsd_v5 (tmpfs 965G)
+# MASTER_PORT=29505
+```
+
+**框架支持**（`verl/workers/config/actor.py:183`）：`teacher_model_source` 三选一 `legacy/current/fixed`，`fixed` 时需配 `teacher_model_path`，加载逻辑在 `verl/workers/fsdp_workers.py:904-919`（用 `ref.fsdp_config` 做 FSDP 加载，和 student/ref 共存但参数独立）。
+
+**架构兼容性**：Qwen3.8-27B 和 Qwen3.5-9B 都是 `Qwen3_5ForConditionalGeneration` 架构、`model_type: qwen3_5`、`image_token_id: 248056`、`eos_token_id: 248044`，vocab 一致，reverse-KL top-k 可算（hidden_size 5120 vs 4096 不影响 logits 维度）。
+
+#### 12.4.1 启动 + step1 实测（2026-09-03）
+
+启动 2026-09-03 09:32，m4 本机 8 卡 H20。GPU 显存峰值 75GB/卡（27B teacher FSDP + 9B student FSDP + vllm 0.7 util + ref 9B + activations），余 22GB，安全。
+
+**step1 指标**（对比 v3-no-ema / v4）：
+
+| 指标 | v5 step1 | v3-no-ema step1 | v4 step1 | 判断 |
+|---|---|---|---|---|
+| training_ppl | **6.54** | 4.52 | 3.6e4 ⚠️ | v5 健康 ✅（27B teacher top-k 在 9B student 上 ppl 合理，比 v4 错配好 5500 倍）|
+| rollout_ppl | 4.99 | 3.56 | 3.53 | 正常 |
+| kl | 0.193 | 0.189 | 0.19 | 正常 |
+| vopd_loss | 0.495 | 0.122 | 0.210 | v5 偏高但合理（27B vs 9B 差异比 9B vs 9B 大），预期会降 |
+| rollout_is_mean | 1.0 | 1.0 | 1.0 | 完全 on-policy ✅ |
+| 首步用时 | ~8 min | ~5 min | ~5 min | 27B teacher forward 慢，1502 步预计 ~200h（8 天）|
+
+**判断**：v5 step1 健康，27B teacher 完全规避了 v4 的"SFT 起点尖锐分布 + 固定 9B teacher 错配"问题。
+
+#### 12.4.2 v4 实测复盘（已停，2026-09-03）
+
+v4 从 2026-09-02 22:57 启动跑到 2026-09-03 09:30（约 10.5 小时），step 214/1502。**没在发散**（vopd_loss 0.21→0.13 缓慢收敛、kl 0.19→0.11 下降、rollout_ppl 3-10 正常），但 **SFT warm-start + 固定 9B teacher 是结构性错配**：
+
+- step1 training_ppl=3.6e4（vs v3-no-ema 4.5，差 8000 倍）——SFT 起点分布尖锐（某些 token 概率极大），第一次 update 后 student 在 teacher top-k 上概率暴跌
+- teacher rate=0 永不更新 = teacher top-k 永远是 SFT 起点的尖锐分布，student 越演化偏离越大
+- training_ppl 长期在 1e3~1e5 量级剧烈波动，vopd_loss 绝对值始终比 v3-no-ema 高一倍（0.13 vs 0.06），收敛慢
+
+**结论**：固定 teacher 消除 EMA 正反馈退化的设计意图正确（v3-no-ema 已验证），但 v4 用 legacy source（=student 初始副本）+ SFT warm-start 是错配——SFT 起点越尖锐越不适合当固定 teacher。v5 改用外部 27B teacher 完全规避此问题。
+
+#### 12.4.3 v5 设计预期
+
+1. **27B teacher logit 分布更平滑**：比 9B teacher 不会过度尖锐，student 容易学（step1 ppl=6.54 已验证）
+2. **固定不更新 = 无 EMA 正反馈退化**：同 v3-no-ema 的"固定 teacher 消除退化"机制
+3. **更强蒸馏信号**：27B 本身比 9B 强，top-k 选出的 token 更高质量，reverse-KL 推 student 学到更好的分布
+4. **预期 vopd_loss 收敛目标**：v3-no-ema 到 step221 已 0.06，v5 初始 0.495 偏高但应逐步降到 0.1 以下
+5. **风险**：27B teacher forward 慢（1502 步 ~8 天），如时间不够可考虑 500 step 早停评测
+
+### 12.5 完整 loss 趋势汇总（v3-no-ema / v3-SFT / v4 / v5，截至 2026-09-03）
+
+> 数据来源：各任务 `train.log` 中 `step:N` 行，提取 `actor/vopd_loss` / `rollout_corr/training_ppl` / `rollout_corr/rollout_ppl` / `rollout_corr/kl` / `rollout_corr/chi2_token` 五个核心指标。
+> 关键阅读：
+> - `vopd_loss` = reverse-KL top-100 蒸馏损失，**越小越好**，但单独看会被 mode-seeking 蒙蔽
+> - `training_ppl` = student 当前 batch 上对 teacher top-k token 的 ppl，**稳定在 10 以内为健康**；若指数级增长 = student 正在跑偏到 teacher support 外
+> - `rollout_ppl` = rollout（student 自己生成）token 在 student 自身下的 ppl，**和 training_ppl 应同量级**；ro_ppl 指数级 > tr_ppl = rollout 乱码化
+> - `kl` = rollout/student policy 与 ref 的 KL，**稳定低位即健康**；v3-SFT kl 看着低（0.01）但 ro_ppl 指数爆 = 退化信号被 kl 蒙蔽
+> - `chi2_token` = token 级 chi2 统计量，**<2 健康**；突发尖峰（如 21.7）= batch 内有极端 outlier，通常下步自愈
+
+#### 12.5.1 v3-no-ema（m3，base 9B student + 固定 9B legacy teacher，rate=0）— ✅ 健康
+
+step 范围：1 → 235（仍在训）。健康判据：tr_ppl 稳定 4~9，ro_ppl 同量级，vopd_loss 0.12 → 0.066 单调收敛。
+
+| step | vopd_loss | training_ppl | rollout_ppl | kl | chi2_token | 备注 |
+|------|-----------|--------------|-------------|------|-------------|------|
+| 1    | 0.1219 | 4.52  | 3.56  | 0.189 | 2.11 | 起点 |
+| 25   | 0.0949 | 13.35 | 7.49  | 0.127 | 1.30 | warmup 期波动 |
+| 50   | 0.0800 | 4.52  | 3.85  | 0.124 | 1.04 | 稳定 |
+| 100  | 0.0778 | 5.37  | 4.30  | 0.126 | 0.72 | 稳定 |
+| 150  | 0.0662 | 5.72  | 4.45  | 0.128 | 1.06 | 稳定 |
+| 200  | 0.0671 | 5.28  | 4.44  | 0.121 | 0.69 | 稳定 |
+| 225  | 0.0626 | 8.65  | 5.67  | 0.133 | 3.82 | 小尖峰，未崩 |
+| 235  | 0.0658 | 5.49  | 4.54  | 0.123 | 0.59 | 已恢复 |
+
+**健康结论**：vopd_loss 0.12→0.066（-46%），tr_ppl 全程 4~9 稳定，ro_ppl 同步稳定，无退化信号。step 225 小尖峰（tr_ppl=8.65, chi2=3.82）下步立即恢复，属正常波动。**作为 v5 的对照基线**。
+
+#### 12.5.2 v3-SFT（m3，SFT warm-start 9B + EMA teacher rate=0.05）— ❌ 退化已停
+
+step 范围：1 → 493（已停）。退化判据：tr_ppl 全程 1e3~1e5 大幅波动，ro_ppl 4.87 → 148.31 单调指数增长 = student rollout 逐步乱码化。
+
+| step | vopd_loss | training_ppl | rollout_ppl | kl | chi2_token | 备注 |
+|------|-----------|--------------|-------------|------|-------------|------|
+| 1    | 0.2142 | 1.62e4 | 4.87   | 0.179 | 1.24 | SFT 起点尖锐 |
+| 50   | 0.1436 | 1.18e4 | 1.84   | 0.081 | 0.83 | vopd 看似在降 |
+| 100  | 0.0871 | 711    | 2.21   | 0.043 | 0.27 | vopd 继续降 |
+| 200  | 0.0394 | 5.36e4 | 6.68   | 0.021 | 0.06 | vopd 已很低 |
+| 300  | 0.0184 | 6.94e3 | 26.86  | 0.013 | 0.26 | ro_ppl 开始涨 |
+| 400  | 0.0093 | 9.24e4 | 70.38  | 0.013 | 0.04 | ro_ppl 指数涨 |
+| 484  | 0.0064 | 3.97e4 | 111.30 | 0.013 | 0.14 | 接近停训 |
+| 493  | 0.0068 | 1.10e5 | 148.31 | 0.013 | 0.07 | 停训点 |
+
+**退化结论**：vopd_loss 从 0.21 降到 0.007（看似收敛 97%）是**假象**——这是 mode-seeking collapse 的典型特征，student 把 teacher top-k 上的概率堆满但忽略了 top-k 外的支撑。真正的退化信号在 `rollout_ppl`：4.87 → 148.31（30 倍），且 `kl` 在 step 200 后稳定 0.013 不再下降 = student 在 rollout 支撑外乱跑。tr_ppl 大幅震荡（711 ~ 1.1e5）也说明 student 分布尖锐不稳定。**EMA 正反馈退化的标准案例**。
+
+#### 12.5.3 v4（m4，SFT warm-start 9B + 固定 legacy 9B teacher rate=0）— ❌ 结构错配已停
+
+step 范围：1 → 216（已停换成 v5）。错配判据：tr_ppl 从 step 1 起就 3.6e4，全程在 3e4 量级震荡，无收敛趋势。
+
+| step | vopd_loss | training_ppl | rollout_ppl | kl | chi2_token | 备注 |
+|------|-----------|--------------|-------------|------|-------------|------|
+| 1    | 0.2099 | 3.64e4 | 3.53  | 0.191 | 1.47 | SFT 起点尖锐 |
+| 25   | 0.1752 | 2.69e4 | 2.48  | 0.151 | 0.74 | warmup 期 |
+| 50   | 0.1562 | 3.03e4 | 8.19  | 0.107 | 0.57 | tr_ppl 不降 |
+| 100  | 0.1350 | 2.68e5 | 2.38  | 0.108 | 0.51 | tr_ppl 反弹 |
+| 150  | 0.1239 | 73.82  | 3.27  | 0.100 | 0.43 | 单步尖峰 |
+| 200  | 0.1228 | 3.65e4 | 9.52  | 0.105 | 0.65 | 回到 3e4 |
+| 216  | 0.1256 | 2.24e4 | 4.88  | 0.108 | 5.69 | 停训点 |
+
+**错配结论**：vopd_loss 0.21→0.126 只下降 40%（vs v3-no-ema 下降 46%），且 tr_ppl 全程 3e4 量级震荡完全没收敛。根因：**SFT 起点 student 分布过度尖锐 + 固定 9B teacher 能力不足以提供平滑矫正信号** = teacher 在 top-k 选出的 token 对 SFT student 没有信息增益。ro_ppl 稳定 3~10 说明 student 自身没崩，但 tr_ppl 不降说明蒸馏没生效。**这就是 v5 把 teacher 升级到 27B 的动机**。
+
+#### 12.5.4 v5（m4，base 9B student + 外部固定 Qwen3.8-27B teacher rate=0）— ⏳ 初始化中
+
+step 范围：0（wandb 重启后仍在初始化，截至 2026-09-03 10:02）。首批数据待补。
+
+| step | vopd_loss | training_ppl | rollout_ppl | kl | chi2_token | 备注 |
+|------|-----------|--------------|-------------|------|-------------|------|
+| 1    | 0.4950 | 6.54  | -     | -    | -    | wandb 重启前首次记录 |
+| 2+   | 待补   | 待补  | 待补  | 待补 | 待补 | 初始化中 |
+
+**预期观察点**（待首 50 step 数据出来后填回）：
+- step 1：vopd=0.495 偏高（27B teacher 与 9B student 分布差距大于 9B legacy），tr_ppl=6.54 与 v3-no-ema 同量级（4.52），无 SFT 尖锐问题
+- step 25-50：vopd 应快速降到 0.1 量级（27B 信号强）
+- step 100+：vopd 应稳定 0.05~0.08，tr_ppl 应稳定 4~10
+- 若 step 200 ro_ppl 开始指数涨 = v5 也退化（不应该，因为 teacher 固定且更强）
+- 若 step 500 tr_ppl 仍稳定 = v5 成功，可作最终方案候选
+
+#### 12.5.5 四任务横向对比（step 1 / step 50 / 末步）
+
+| 任务 | step1 tr_ppl | step1 vopd | 末步 | 末步 tr_ppl | 末步 ro_ppl | 末步 vopd | 健康判定 |
+|------|-------------|------------|------|-------------|-------------|-----------|----------|
+| v3-no-ema | 4.52 | 0.122 | 235  | 5.49   | 4.54   | 0.066 | ✅ 健康 |
+| v3-SFT    | 1.62e4 | 0.214 | 493  | 1.10e5 | 148.31 | 0.007 | ❌ 退化 |
+| v4        | 3.64e4 | 0.210 | 216  | 2.24e4 | 4.88   | 0.126 | ❌ 错配 |
+| v5        | 6.54  | 0.495 | -    | -      | -      | -     | ⏳ 待补 |
+
+**核心洞察**：
+1. **起点 ppl 决定健康基线**：v3-no-ema / v5（base 9B）step1 tr_ppl=4.52/6.54 正常；v3-SFT / v4（SFT 起点）step1 tr_ppl=1.62e4/3.64e4 = SFT 分布尖锐导致 teacher top-k 外概率大，后续难收敛
+2. **vopd_loss 下降不是健康判据**：v3-SFT vopd 从 0.21 降到 0.007 看似收敛最好，实则退化最严重；必须配合 `rollout_ppl` 看 rollout 是否乱码化
+3. **固定 teacher（rate=0）+ base student 是稳定配方**：v3-no-ema 已证；v5 在此基础上把 teacher 从 9B 升到 27B，预期更稳更强
+4. **EMA teacher 是退化根因**：v3-SFT 与 v3-no-ema 唯一区别是 rate（0.05 vs 0.0），结果 v3-SFT ro_ppl 30 倍增长；EMA 正反馈让 teacher 逐步追 student 的错误分布，最终一起偏
+5. **SFT warm-start + 9B 固定 teacher 不适配**：v4 证明 SFT 起点需要更强 teacher（如 27B）才有足够信号矫正
+
+#### 12.5.6 训练健康度巡检口径（建议）
+
+日常巡检只看 3 个指标即可判断任务是否健康，不必看全表：
+
+1. **training_ppl 趋势**：与前 50 step 均值比，若 >2x 且持续 3 step = 预警，>10x = 已退化
+2. **rollout_ppl 趋势**：若 ro_ppl / tr_ppl 比 >3 = rollout 失控；指数增长 = 必停
+3. **chi2_token 尖峰**：单步 >5 但下步回落 = 正常 outlier；连续 >5 = 分布异常需看样本
+
+vopd_loss / kl 不作为巡检指标——两者都会在退化时给出误导信号（vopd 下降、kl 稳定低）。
+

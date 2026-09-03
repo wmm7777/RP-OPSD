@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
-# RP-OPSD v3-no-ema 单文件训练启动脚本（关 EMA，机器3 m3 跨机）
+# RP-OPSD v3-no-ema 单文件训练启动脚本（关 EMA，m4 本机，2026-09-03 重建）
+# 原在 m3 上跑健康（tr_ppl 4~9 稳定，ro_ppl 不漂），m3 被回收后迁回 m4 本机
 # 与 v3 base 区别仅：teacher_update_rate 0.05→0.0（teacher 仍在 ema 模式但永不更新，
 #   等价固定在 student 初始 base 9B，从机制上消除 EMA 正反馈退化）
 #   - student = base Qwen3.5-9B（同 v3）
@@ -9,9 +10,9 @@
 # 框架坑: teacher_regularization 只接受 ema/trust-region/progressive（actor.py:130），
 #   不支持 "none"；关 EMA 的正确写法是保持 ema + rate=0.0
 # 长度口径: max_prompt(3072) + max_response(2048) = 5120 (5k)
-# 启动: bash scripts/run_rp_opsd_v3_no_ema.sh
+# 启动: bash scripts/run_rp_opsd_v3_no_ema_m4.sh
 # 日志: tee 到 $OUTPUT_DIR/logs/train.log
-# 跨机 m3 注意: TMPDIR/MASTER_PORT/CACHE 本地化（见环境变量段）
+# m4 本机注意: TMPDIR/MASTER_PORT/CACHE 本地化（见环境变量段）
 # =============================================================================
 
 # ---------- 路径与运行身份 ----------
@@ -19,7 +20,7 @@ PROJECT_ROOT="/data4/wumeimei/flash_note/RP-OPSD"
 MODEL_PATH="/data4/wumeimei/download_models/Qwen3.5-9B"
 CONDA_ENV="verl_opd_flashnote"
 CONDA_SH="/data1/meimei.wu/miniforge3/etc/profile.d/conda.sh"
-OUTPUT_DIR="/data1/meimei.wu/flash_note/flashnote_train_v3_no_ema"
+OUTPUT_DIR="/data4/wumeimei/flash_note/RP-OPSD/outputs/flashnote_train_v3_no_ema"
 TASK_TRAIN_FILE="$PROJECT_ROOT/.runtime/flashnote_summary/train.parquet"
 CUSTOM_CHAT_TEMPLATE_FILE="$PROJECT_ROOT/chat_templates/perception_chat_template_qwen35.jinja"
 
@@ -57,7 +58,7 @@ LR=2e-6
 LR_WARMUP_STEPS=75
 TRAINER_TOTAL_EPOCHS=2
 TRAINER_SAVE_FREQ=150
-TRAINER_MAX_ACTOR_CKPT_TO_KEEP=10
+TRAINER_MAX_ACTOR_CKPT_TO_KEEP=2
 TRAINER_LOGGER='["console","tensorboard","wandb"]'
 
 # ---------- Actor / Rollout 内存与策略 ----------
@@ -108,15 +109,15 @@ export WANDB_API_KEY="${WANDB_API_KEY:-}"
 export WANDB_MODE="${WANDB_MODE:-online}"
 
 # ---------- 跨机 m3 配置（sshfs 挂载 /data4+/data1，但 /tmp 与 cache 必须本地化）----------
-# 坑1: TMPDIR=/tmp 指向根盘 vda2（m3 根盘 99G/94G 100% 满），ray 报 95% full → 改 /dev/shm tmpfs 965G
+# 坑1: TMPDIR=/tmp 指向根盘 vda2（根盘常满）→ 改 /dev/shm tmpfs 965G
 #   （记忆 verl-tmpdir-shm: verl/ray TMPDIR 必须用 tmpfs 不能用 NFS）
-# 坑2: MASTER_PORT 29500 被占 → 换 29503（v3 用 29500，v3sft 在 m3 用 29501，v4 在 m4 用 29504）
+# 坑2: MASTER_PORT 29500 被占 → 换 29505（v3 用 29500，v3sft 29501，v3-no-ema m3 29503，v4 29504，v5 29502）
 # 坑3: triton cache 冷启动竞态 → 本地化（首 step 会慢，后续正常）
 export TMPDIR="/dev/shm/rp_opsd_v3_no_ema"
 export HF_DATASETS_CACHE="$TMPDIR/hf_datasets"
 export TRITON_CACHE_DIR="$TMPDIR/triton"
 export HF_HOME="$TMPDIR/hf_home"
-export MASTER_PORT=29503
+export MASTER_PORT=29505
 mkdir -p "$TMPDIR" "$HF_DATASETS_CACHE" "$TRITON_CACHE_DIR" "$HF_HOME"
 
 # ---------- 初始化 ----------

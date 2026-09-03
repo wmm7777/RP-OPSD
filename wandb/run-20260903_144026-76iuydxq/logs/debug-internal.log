@@ -1,0 +1,11 @@
+{"time":"2026-09-03T14:40:26.383264982+08:00","level":"INFO","msg":"stream: starting","core version":"0.23.1"}
+{"time":"2026-09-03T14:40:27.145283358+08:00","level":"INFO","msg":"stream: created new stream","id":"76iuydxq"}
+{"time":"2026-09-03T14:40:27.145694359+08:00","level":"INFO","msg":"stream: started","id":"76iuydxq"}
+{"time":"2026-09-03T14:40:27.145690975+08:00","level":"INFO","msg":"handler: started","stream_id":"76iuydxq"}
+{"time":"2026-09-03T14:40:27.145725172+08:00","level":"INFO","msg":"writer: started","stream_id":"76iuydxq"}
+{"time":"2026-09-03T14:40:27.145733885+08:00","level":"INFO","msg":"sender: started","stream_id":"76iuydxq"}
+{"time":"2026-09-03T14:59:11.271597474+08:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/wmmm/RP-OPSD/76iuydxq/file_stream\": unexpected EOF"}
+{"time":"2026-09-03T20:14:56.083470272+08:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/wmmm/RP-OPSD/76iuydxq/file_stream\": unexpected EOF"}
+{"time":"2026-09-03T21:48:06.058344535+08:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/wmmm/RP-OPSD/76iuydxq/file_stream\": unexpected EOF"}
+{"time":"2026-09-03T22:50:25.903306821+08:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/wmmm/RP-OPSD/76iuydxq/file_stream\": unexpected EOF"}
+{"time":"2026-09-03T23:52:10.620022417+08:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/wmmm/RP-OPSD/76iuydxq/file_stream\": unexpected EOF"}

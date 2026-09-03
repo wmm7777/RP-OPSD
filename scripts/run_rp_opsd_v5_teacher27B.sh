@@ -1,45 +1,42 @@
 #!/usr/bin/env bash
 # =============================================================================
-# RP-OPSD v3-no-ema 单文件训练启动脚本（关 EMA，机器3 m3 跨机）
-# 与 v3 base 区别仅：teacher_update_rate 0.05→0.0（teacher 仍在 ema 模式但永不更新，
-#   等价固定在 student 初始 base 9B，从机制上消除 EMA 正反馈退化）
-#   - student = base Qwen3.5-9B（同 v3）
-#   - teacher = student 初始副本冻结（legacy source + ema + rate=0）
-#   - mopd/分辨率特权/5k 口径/alpha1.0 全同 v3 base
-# 框架坑: teacher_regularization 只接受 ema/trust-region/progressive（actor.py:130），
-#   不支持 "none"；关 EMA 的正确写法是保持 ema + rate=0.0
+# RP-OPSD v5 单文件训练启动脚本（外部 27B 固定 teacher + base 9B student，机器4 m4 本机）
+# 与 v4 区别：
+#   - student 换回 base 9B（同 v3，未训练）
+#   - teacher 从 "legacy(student 初始副本)" 改成 "fixed(外部 Qwen3.8-27B)"
+#   - 27B teacher 比 9B student 强很多，teacher 提供更高质量 logit 蒸馏信号
+#   - teacher 固定不更新（rate=0.0），消除了 EMA 正反馈退化（同 v3-no-ema）
+# 组合动机：v3-no-ema(base 9B + 固定 9B teacher) 已证明稳定收敛；
+#   v5 把 teacher 从 9B 升级到 27B = 更强的蒸馏信号 + 仍保持固定不退化
+# 架构兼容：Qwen3.8-27B 和 Qwen3.5-9B 都是 Qwen3_5ForConditionalGeneration，
+#   image_token_id 248056 / eos_token_id 248044 一致，vocab 一致，reverse-KL top-k 可算
 # 长度口径: max_prompt(3072) + max_response(2048) = 5120 (5k)
-# 启动: bash scripts/run_rp_opsd_v3_no_ema.sh
+# 启动: bash scripts/run_rp_opsd_v5_teacher27B.sh
 # 日志: tee 到 $OUTPUT_DIR/logs/train.log
-# 跨机 m3 注意: TMPDIR/MASTER_PORT/CACHE 本地化（见环境变量段）
 # =============================================================================
 
 # ---------- 路径与运行身份 ----------
 PROJECT_ROOT="/data4/wumeimei/flash_note/RP-OPSD"
 MODEL_PATH="/data4/wumeimei/download_models/Qwen3.5-9B"
+TEACHER_MODEL_PATH="/data4/wumeimei/download_models/Qwen3.8-27B"
 CONDA_ENV="verl_opd_flashnote"
 CONDA_SH="/data1/meimei.wu/miniforge3/etc/profile.d/conda.sh"
-OUTPUT_DIR="/data1/meimei.wu/flash_note/flashnote_train_v3_no_ema"
+OUTPUT_DIR="$PROJECT_ROOT/outputs/flashnote_train_v5_teacher27B"
 TASK_TRAIN_FILE="$PROJECT_ROOT/.runtime/flashnote_summary/train.parquet"
 CUSTOM_CHAT_TEMPLATE_FILE="$PROJECT_ROOT/chat_templates/perception_chat_template_qwen35.jinja"
 
 # ---------- 实验元数据 ----------
-EXPERIMENT_NAME="RP-OPSD-Qwen3.5-9B-v3-no-ema"
+EXPERIMENT_NAME="RP-OPSD-Qwen3.5-9B-v5-teacher27B-no-ema"
 PROJECT_NAME="RP-OPSD"
 CONFIG_NAME="vopd"
 
 # ---------- 长度字段（改一个必须全链复查） ----------
-# MAX_MODEL_LEN 6144→5120：seqlen 增长后 actor forward/backward 峰值显存超限
-# （step 300 seqlen max=120k 时 OOM），压低 ppo_max_token_len_per_gpu 直接降峰值
-# prompt 5120→3072：实测 prompt ~1700 token（文本 395 + 图像 ~1280），3072=1.8x 余量
-# response 1024→2048：summary 需要更长输出（gen_gold max_tokens=4096，SFT 训练上限）
 MAX_PROMPT_LENGTH=3072
 MAX_RESPONSE_LENGTH=2048
 MAX_MODEL_LEN=$((MAX_PROMPT_LENGTH + MAX_RESPONSE_LENGTH))   # 5120
 PPO_MAX_TOKEN_LEN_PER_GPU=$MAX_MODEL_LEN                      # 必须等于 MAX_MODEL_LEN
 
 # ---------- 训练批次 ----------
-# ROLLOUT_N 保持 8（不减并发）
 TRAIN_BATCH_SIZE=96
 PPO_MIMI_BATCH_SIZE=96
 PPO_MICRO_BATCH_SIZE_PER_GPU=1
@@ -50,9 +47,6 @@ WORLD_SIZE="${WORLD_SIZE:-1}"
 TRAINER_NNODES=$WORLD_SIZE
 
 # ---------- 学习率 / 训练步数 ----------
-# LR_WARMUP_STEPS 10→75：72k 数据集 × 2epoch = 1502 步，10 步 warmup 仅 0.7%
-#   teacher EMA 半衰期 ~14 步（rate=0.05），75 步 ≈ 5 个半衰期让 teacher 充分收敛
-#   no-ema 下 rate=0，teacher 不收敛而是直接冻结，warmup 75 步保留以对齐 v3
 LR=2e-6
 LR_WARMUP_STEPS=75
 TRAINER_TOTAL_EPOCHS=2
@@ -72,17 +66,19 @@ REF_LOGPROB_MICRO_BATCH_SIZE_PER_GPU=1
 ROLLOUT_AGENT_NUM_WORKERS=8
 
 # ---------- 自蒸馏 / Teacher ----------
-# ★ no-ema：rate 0.05→0.0，teacher 保持在 student 初始 base 9B 不更新
-TEACHER_MODEL_SOURCE="legacy"
-TEACHER_REGULARIZATION="ema"      # 框架不支持 "none"；保持 ema + rate=0 等价关 EMA
+# ★ v5: teacher_model_source 从 legacy 改成 fixed（外部 27B teacher）
+#   + teacher_model_path 指定 Qwen3.8-27B
+#   + regularization=ema + rate=0.0 = teacher 永不更新（fixed source 下双保险）
+TEACHER_MODEL_SOURCE="fixed"
+TEACHER_MODEL_PATH="/data4/wumeimei/download_models/Qwen3.8-27B"
+TEACHER_REGULARIZATION="ema"   # 框架不支持 "none"；fixed source + ema + rate=0 = teacher 永不更新
 TEACHER_UPDATE_RATE=0.0
 ALPHA=1.0
 DONT_REPROMPT_ON_SELF_SUCCESS=True
 DISTILLATION_TOPK=100
-# ---------- 蒸馏目标（官方 canonical 必传，漏传则 verl 默认 generalized_jsd 致退化）----------
-# 漏传 objective 走默认 generalized_jsd(forward JSD+student选support+tail)，tb 证实导致正反馈退化
+# ---------- 蒸馏目标（同 v3/v3-no-ema/v4）----------
 DISTILLATION_OBJECTIVE="mopd_topk_reverse_kl"   # 论文 Eq.(5) bias-corrected reverse-KL
-DISTILLATION_TOPK_SOURCE="teacher"               # teacher 选 top-k support，student 退化改不了 support
+DISTILLATION_TOPK_SOURCE="teacher"               # teacher 选 top-k support
 DISTILLATION_ADD_TAIL=False                       # no tail bucket, no renormalization
 
 # ---------- 检查点 / 输出 ----------
@@ -102,38 +98,39 @@ export VLLM_WORKER_MULTIPROC_METHOD=spawn
 ulimit -c 0
 
 # ---------- wandb 配置（API key 不硬编码，从 shell env 继承）----------
-# 跨机 m3 需 ssh 时把 WANDB_API_KEY 传过去：ssh -o SendEnv=WANDB_API_KEY user@host '...'
-# 或 m3 上单独 wandb login 一次（存 ~/.netrc）
+# 启动前在 shell 里 export WANDB_API_KEY=xxx 再 bash 脚本
+# wandb project=trainer.project_name（RP-OPSD）, run=trainer.experiment_name（v5-teacher27B-no-ema）
 export WANDB_API_KEY="${WANDB_API_KEY:-}"
-export WANDB_MODE="${WANDB_MODE:-online}"
+export WANDB_MODE="${WANDB_MODE:-online}"   # offline=本地存，不传外网；online=实时上传
 
-# ---------- 跨机 m3 配置（sshfs 挂载 /data4+/data1，但 /tmp 与 cache 必须本地化）----------
-# 坑1: TMPDIR=/tmp 指向根盘 vda2（m3 根盘 99G/94G 100% 满），ray 报 95% full → 改 /dev/shm tmpfs 965G
-#   （记忆 verl-tmpdir-shm: verl/ray TMPDIR 必须用 tmpfs 不能用 NFS）
-# 坑2: MASTER_PORT 29500 被占 → 换 29503（v3 用 29500，v3sft 在 m3 用 29501，v4 在 m4 用 29504）
+# ---------- m4 本机配置（/dev/shm tmpfs 965G）----------
+# 坑1: TMPDIR=/tmp 根盘 99G/70G 74% 易爆 → /dev/shm tmpfs 965G（记忆 verl-tmpdir-shm）
+# 坑2: MASTER_PORT 29504 被 v4 用 → 换 29505
 # 坑3: triton cache 冷启动竞态 → 本地化（首 step 会慢，后续正常）
-export TMPDIR="/dev/shm/rp_opsd_v3_no_ema"
+export TMPDIR="/dev/shm/rp_opsd_v5"
 export HF_DATASETS_CACHE="$TMPDIR/hf_datasets"
 export TRITON_CACHE_DIR="$TMPDIR/triton"
 export HF_HOME="$TMPDIR/hf_home"
-export MASTER_PORT=29503
+export MASTER_PORT=29505
 mkdir -p "$TMPDIR" "$HF_DATASETS_CACHE" "$TRITON_CACHE_DIR" "$HF_HOME"
 
 # ---------- 初始化 ----------
 mkdir -p "$TRAINER_DEFAULT_LOCAL_DIR" "$TRAINER_ROLLOUT_DATA_DIR" "$OUTPUT_DIR/logs"
 [[ -f "$CUSTOM_CHAT_TEMPLATE_FILE" ]] || { echo "chat template not found: $CUSTOM_CHAT_TEMPLATE_FILE" >&2; exit 1; }
 [[ -f "$TASK_TRAIN_FILE" ]] || { echo "train parquet not found: $TASK_TRAIN_FILE" >&2; exit 1; }
+[[ -d "$TEACHER_MODEL_PATH" ]] || { echo "teacher model not found: $TEACHER_MODEL_PATH" >&2; exit 1; }
 
 # ---------- 激活 conda env ----------
 source "$CONDA_SH"
 conda activate "$CONDA_ENV"
 
 cd "$PROJECT_ROOT"
-echo "[run_rp_opsd_v3_no_ema] experiment=$EXPERIMENT_NAME"
-echo "[run_rp_opsd_v3_no_ema] max_prompt=$MAX_PROMPT_LENGTH max_response=$MAX_RESPONSE_LENGTH max_model_len=$MAX_MODEL_LEN ppo_max_token_len_per_gpu=$PPO_MAX_TOKEN_LEN_PER_GPU"
-echo "[run_rp_opsd_v3_no_ema] data=$TASK_TRAIN_FILE"
-echo "[run_rp_opsd_v3_no_ema] output=$OUTPUT_DIR"
-echo "[run_rp_opsd_v3_no_ema] teacher_regularization=$TEACHER_REGULARIZATION teacher_update_rate=$TEACHER_UPDATE_RATE (no-ema: teacher frozen at student initial)"
+echo "[run_rp_opsd_v5] experiment=$EXPERIMENT_NAME"
+echo "[run_rp_opsd_v5] student=$MODEL_PATH"
+echo "[run_rp_opsd_v5] teacher=$TEACHER_MODEL_PATH (fixed, rate=$TEACHER_UPDATE_RATE)"
+echo "[run_rp_opsd_v5] max_prompt=$MAX_PROMPT_LENGTH max_response=$MAX_RESPONSE_LENGTH max_model_len=$MAX_MODEL_LEN ppo_max_token_len_per_gpu=$PPO_MAX_TOKEN_LEN_PER_GPU"
+echo "[run_rp_opsd_v5] data=$TASK_TRAIN_FILE"
+echo "[run_rp_opsd_v5] output=$OUTPUT_DIR"
 
 # ---------- 启动训练 ----------
 python3 -m verl.trainer.main_ppo --config-name "$CONFIG_NAME" \
@@ -173,6 +170,7 @@ python3 -m verl.trainer.main_ppo --config-name "$CONFIG_NAME" \
     actor_rollout_ref.actor.self_distillation.is_clip=2.0 \
     actor_rollout_ref.actor.self_distillation.teacher_always_on=True \
     actor_rollout_ref.actor.self_distillation.teacher_model_source=$TEACHER_MODEL_SOURCE \
+    actor_rollout_ref.actor.self_distillation.teacher_model_path=$TEACHER_MODEL_PATH \
     actor_rollout_ref.actor.self_distillation.teacher_regularization=$TEACHER_REGULARIZATION \
     actor_rollout_ref.actor.self_distillation.teacher_update_rate=$TEACHER_UPDATE_RATE \
     actor_rollout_ref.actor.self_distillation.teacher_image_key=teacher_images \

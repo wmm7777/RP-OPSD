@@ -1,0 +1,7 @@
+{"time":"2026-09-03T10:02:28.038371341+08:00","level":"INFO","msg":"stream: starting","core version":"0.23.1"}
+{"time":"2026-09-03T10:02:28.551110193+08:00","level":"INFO","msg":"stream: created new stream","id":"nr74kn5h"}
+{"time":"2026-09-03T10:02:28.551799755+08:00","level":"INFO","msg":"handler: started","stream_id":"nr74kn5h"}
+{"time":"2026-09-03T10:02:28.55204671+08:00","level":"INFO","msg":"stream: started","id":"nr74kn5h"}
+{"time":"2026-09-03T10:02:28.552062407+08:00","level":"INFO","msg":"writer: started","stream_id":"nr74kn5h"}
+{"time":"2026-09-03T10:02:28.552098879+08:00","level":"INFO","msg":"sender: started","stream_id":"nr74kn5h"}
+{"time":"2026-09-03T10:39:58.553153227+08:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/wmmm/RP-OPSD/nr74kn5h/file_stream\": unexpected EOF"}

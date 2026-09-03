@@ -1,0 +1,107 @@
+{
+  "os":  "Linux-5.15.0-178-generic-x86_64-with-glibc2.35",
+  "python":  "CPython 3.12.14",
+  "startedAt":  "2026-09-03T06:40:26.152082Z",
+  "args":  [
+    "--node-ip-address=10.162.52.32",
+    "--node-manager-port=41055",
+    "--object-store-name=/dev/shm/rp_opsd_v3_no_ema/ray/session_2026-09-03_14-35-45_141396_3357521/sockets/plasma_store",
+    "--raylet-name=/dev/shm/rp_opsd_v3_no_ema/ray/session_2026-09-03_14-35-45_141396_3357521/sockets/raylet",
+    "--redis-address=None",
+    "--metrics-agent-port=51801",
+    "--logging-rotate-bytes=536870912",
+    "--logging-rotate-backup-count=5",
+    "--runtime-env-agent-port=45708",
+    "--gcs-address=10.162.52.32:60031",
+    "--session-name=session_2026-09-03_14-35-45_141396_3357521",
+    "--temp-dir=/dev/shm/rp_opsd_v3_no_ema/ray",
+    "--webui=127.0.0.1:8265",
+    "--cluster-id=99a81a41502b8f8be63d99fa9b176e26cc7d62bffa8ff242977b1b89",
+    "--startup-token=180",
+    "--worker-launch-time-ms=1788417350314",
+    "--node-id=503cc7be7e9f97be5b1ab9db6c7010bda113171160729e29b6c9b56a",
+    "--runtime-env-hash=-1106042212"
+  ],
+  "program":  "/data1/meimei.wu/miniforge3/envs/verl_opd_flashnote/lib/python3.12/site-packages/ray/_private/workers/default_worker.py",
+  "git":  {
+    "remote":  "https://github.com/wmm7777/RP-OPSD.git",
+    "commit":  "2efbcc8b4a84d9146f66c53f717a460946a5b4e8"
+  },
+  "email":  "1277313379@qq.com",
+  "root":  "/data4/wumeimei/flash_note/RP-OPSD",
+  "host":  "rf-nlp-h20-4",
+  "executable":  "/data1/meimei.wu/miniforge3/envs/verl_opd_flashnote/bin/python3",
+  "cpu_count":  90,
+  "cpu_count_logical":  180,
+  "gpu":  "NVIDIA H20",
+  "gpu_count":  8,
+  "disk":  {
+    "/":  {
+      "total":  "105365770240",
+      "used":  "74330550272"
+    }
+  },
+  "memory":  {
+    "total":  "2071470469120"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA H20",
+      "memoryTotal":  "102625181696",
+      "cudaCores":  9984,
+      "architecture":  "Hopper",
+      "uuid":  "GPU-c25a9302-ec40-63ae-c6b3-62bb43ec0a8a"
+    },
+    {
+      "name":  "NVIDIA H20",
+      "memoryTotal":  "102625181696",
+      "cudaCores":  9984,
+      "architecture":  "Hopper",
+      "uuid":  "GPU-4822aef9-be8b-234b-e24a-50e60031f096"
+    },
+    {
+      "name":  "NVIDIA H20",
+      "memoryTotal":  "102625181696",
+      "cudaCores":  9984,
+      "architecture":  "Hopper",
+      "uuid":  "GPU-71a3bef7-c678-36c6-09a8-7d6043f72063"
+    },
+    {
+      "name":  "NVIDIA H20",
+      "memoryTotal":  "102625181696",
+      "cudaCores":  9984,
+      "architecture":  "Hopper",
+      "uuid":  "GPU-a5d059db-f33c-9f93-44d1-56af922fbcb5"
+    },
+    {
+      "name":  "NVIDIA H20",
+      "memoryTotal":  "102625181696",
+      "cudaCores":  9984,
+      "architecture":  "Hopper",
+      "uuid":  "GPU-ec6f2854-77e7-8ee9-3df6-f34a1e4387a6"
+    },
+    {
+      "name":  "NVIDIA H20",
+      "memoryTotal":  "102625181696",
+      "cudaCores":  9984,
+      "architecture":  "Hopper",
+      "uuid":  "GPU-d9016530-2d66-80fb-d05f-ffabb1253af1"
+    },
+    {
+      "name":  "NVIDIA H20",
+      "memoryTotal":  "102625181696",
+      "cudaCores":  9984,
+      "architecture":  "Hopper",
+      "uuid":  "GPU-073e609a-fa40-f7cd-7e97-881433cc3365"
+    },
+    {
+      "name":  "NVIDIA H20",
+      "memoryTotal":  "102625181696",
+      "cudaCores":  9984,
+      "architecture":  "Hopper",
+      "uuid":  "GPU-83314e4f-5750-7ac0-ca46-eba560670523"
+    }
+  ],
+  "cudaVersion":  "13.0",
+  "writerId":  "7gebah99ofjpbyoquf3us2gvthqkdfmq"
+}
